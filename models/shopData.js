@@ -70,6 +70,6 @@ const BusinessSchema = new Schema({
 
 BusinessSchema.index({ location: '2dsphere' });
 
-const ServicesModel = model('ServicesModel','Shops-data' , BusinessSchema);
+const ServicesModel = model('ServicesModel', BusinessSchema, 'Shops-data');
 
 export default ServicesModel;
