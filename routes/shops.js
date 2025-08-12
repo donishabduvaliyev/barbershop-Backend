@@ -39,7 +39,7 @@ router.get('/home-feed', async (req, res) => {
     const feed = await ServicesModel.aggregate([
       // First, sort all shops by rating to get the best ones at the top
       { $sort: { rating: -1 } },
-      
+
       // Group the shops by their category
       {
         $group: {
@@ -94,7 +94,7 @@ router.post('/search-shops', async (req, res) => {
     // The rest of the pipeline logic (geoNear, sorting, facet) is the same...
     let pipeline = [];
     if (userLocation && userLocation.coordinates) {
-       pipeline.push({
+      pipeline.push({
         $geoNear: {
           near: { type: 'Point', coordinates: userLocation.coordinates },
           distanceField: 'distanceInKm',
@@ -108,7 +108,7 @@ router.post('/search-shops', async (req, res) => {
     }
 
     const sortOptions = { isPromoted: -1, promotionRank: 1 };
-     switch (sortBy) {
+    switch (sortBy) {
       case 'rating': sortOptions.rating = -1; break;
       case 'distance': if (userLocation) sortOptions.distanceInKm = 1; break;
       case 'reviews': sortOptions.reviewsCount = -1; break;
@@ -126,7 +126,7 @@ router.post('/search-shops', async (req, res) => {
     const results = await ServicesModel.aggregate(pipeline);
     const shops = results[0].paginatedResults;
     const totalCount = results[0].totalCount.length > 0 ? results[0].totalCount[0].count : 0;
-    
+
     res.status(200).json({
       shops,
       pagination: {
@@ -141,6 +141,111 @@ router.post('/search-shops', async (req, res) => {
     res.status(500).json({ message: 'Server error searching shops' });
   }
 });
+
+
+
+router.post('/discovery-search', async (req, res) => {
+  try {
+    const { searchTerm, category, userLocation } = req.body;
+
+    // --- 1. Base Match Query ---
+    // This initial filter applies to all subsequent lists.
+    const baseMatch = { isOperational: true };
+
+    if (category) {
+      baseMatch.category = category;
+    }
+
+    // Add search term matching for any of the languages
+    if (searchTerm) {
+      baseMatch.$or = [
+        { 'name.en': { $regex: searchTerm, $options: 'i' } },
+        { 'name.uz': { $regex: searchTerm, $options: 'i' } },
+        { 'name.ru': { $regex: searchTerm, $options: 'i' } },
+      ];
+    }
+
+    // --- 2. Aggregation Pipeline using $facet ---
+    // $facet allows us to run multiple aggregation pipelines on the same set of input documents.
+    const pipeline = [
+      { $match: baseMatch },
+      {
+        $facet: {
+          // Pipeline for Advertised Shops
+          advertisedShops: [
+            { $match: { isPromoted: true } },
+            { $sort: { promotionRank: 1 } },
+            { $limit: 5 },
+          ],
+
+          // Pipeline for Editor's Choice Shops
+          editorsChoiceShops: [
+            { $match: { isEditorsChoice: true, isPromoted: { $ne: true } } }, // Exclude ads
+            { $sort: { rating: -1 } },
+            { $limit: 10 },
+          ],
+
+          topRatedShops: [
+            { $match: { isPromoted: { $ne: true } } },
+            { $sort: { rating: -1, reviewsCount: -1 } },
+            { $limit: 10 },
+          ],
+
+
+          bestPriceShops: [
+            { $match: { isPromoted: { $ne: true } } },
+            { $sort: { priceTier: 1, rating: -1 } },
+            { $limit: 10 },
+          ],
+        },
+      },
+
+      {
+        $project: {
+          advertisedShops: '$advertisedShops',
+          editorsChoiceShops: '$editorsChoiceShops',
+          topRatedShops: '$topRatedShops',
+          bestPriceShops: '$bestPriceShops',
+
+        },
+      },
+    ];
+
+
+    let nearYouShops = [];
+    if (userLocation && userLocation.coordinates) {
+      nearYouShops = await Business.aggregate([
+        {
+          $geoNear: {
+            near: {
+              type: 'Point',
+              coordinates: userLocation.coordinates,
+            },
+            distanceField: 'distanceInKm',
+            distanceMultiplier: 0.001,
+            query: { ...baseMatch, isPromoted: { $ne: true } },
+            spherical: true,
+            limit: 10,
+          },
+        },
+      ]);
+    }
+
+
+    const results = await ServicesModel.aggregate(pipeline);
+
+
+    const finalResponse = results[0] || {};
+    finalResponse.nearYouShops = nearYouShops;
+
+    res.status(200).json(finalResponse);
+
+  } catch (error) {
+    console.error('Error fetching discovery data:', error);
+    res.status(500).json({ message: 'Server error during discovery search' });
+  }
+});
+
 
 
 export default router;
