@@ -4,6 +4,7 @@ dotenv.config();
 import User from '../models/userdata.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
+const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
 const bot = new TelegramBot(token, { polling: true });
 const webAppUrl = 'https://barbershop-telegram-bot.netlify.app/';
 // start the bot
@@ -89,6 +90,75 @@ bot.on('contact', async (msg) => {
         console.error("❌ DATABASE ERROR:", error);
         bot.sendMessage(chatId, "❌ Something went wrong with the registration. Please try again later.");
     }
+});
+
+
+export const sendBookingRequestToAdmin = async (booking) => {
+  const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+  const formattedTime = new Date(booking.requestedTime).toLocaleDateString("en-US", dateOptions);
+  
+  const message = `
+    📢 *New Booking Request* 📢
+    *Shop:* ${booking.shopName}
+    *User:* @${booking.userTelegramUsername || booking.userTelegramId}
+    *User Number:*${booking.userNumber}
+    *User Telegram number:* ${booking.userTelegramNumber}
+    *Time:* ${formattedTime}
+  `;
+
+  // Create "Confirm" and "Reject" buttons
+  const options = {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Confirm', callback_data: `confirm_${booking._id}` },
+          { text: '❌ Reject', callback_data: `reject_${booking._id}` },
+        ],
+      ],
+    },
+  };
+
+  await bot.sendMessage(adminChatId, message, options);
+};
+
+// --- Listener for when the admin clicks a button ---
+bot.on('callback_query', async (callbackQuery) => {
+  const { data, message } = callbackQuery;
+  const [action, bookingId] = data.split('_');
+  
+  const booking = await Booking.findById(bookingId);
+  if (!booking) {
+    bot.sendMessage(adminChatId, 'Error: Booking not found.');
+    return;
+  }
+  
+  let newStatus;
+  let userMessage;
+  
+  if (action === 'confirm') {
+    newStatus = 'confirmed';
+    userMessage = `✅ Your booking for *${booking.shopName}* at ${new Date(booking.requestedTime).toLocaleTimeString()} has been confirmed!`;
+  } else if (action === 'reject') {
+    newStatus = 'rejected';
+    userMessage = `❌ Unfortunately, your booking for *${booking.shopName}* at ${new Date(booking.requestedTime).toLocaleTimeString()} could not be confirmed.`;
+  } else {
+    return;
+  }
+  
+  // Update the booking status in the database
+  booking.status = newStatus;
+  await booking.save();
+  
+  // Notify the user of the result
+  await bot.sendMessage(booking.userTelegramId, userMessage, { parse_mode: 'Markdown' });
+  
+  // Update the original admin message to show the action was taken
+  bot.editMessageText(`Action taken: *${newStatus.toUpperCase()}*`, {
+    chat_id: message.chat.id,
+    message_id: message.message_id,
+    parse_mode: 'Markdown',
+  });
 });
 
 export default bot;

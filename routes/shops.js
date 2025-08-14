@@ -1,6 +1,8 @@
 import express from 'express';
 import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
+import Booking from '../models/bookingHistory.js';
+import { sendBookingRequestToAdmin } from '../config/telegramBot.js';
 
 const router = express.Router();
 
@@ -147,16 +149,11 @@ router.post('/search-shops', async (req, res) => {
 router.post('/discovery-search', async (req, res) => {
   try {
     const { searchTerm, category, userLocation } = req.body;
-
-    // --- 1. Base Match Query ---
-    // This initial filter applies to all subsequent lists.
     const baseMatch = { isOperational: true };
 
     if (category) {
       baseMatch.category = category;
     }
-
-    // Add search term matching for any of the languages
     if (searchTerm) {
       baseMatch.$or = [
         { 'name.en': { $regex: searchTerm, $options: 'i' } },
@@ -165,22 +162,19 @@ router.post('/discovery-search', async (req, res) => {
       ];
     }
 
-    // --- 2. Aggregation Pipeline using $facet ---
-    // $facet allows us to run multiple aggregation pipelines on the same set of input documents.
     const pipeline = [
       { $match: baseMatch },
       {
         $facet: {
-          // Pipeline for Advertised Shops
+
           advertisedShops: [
             { $match: { isPromoted: true } },
             { $sort: { promotionRank: 1 } },
             { $limit: 5 },
           ],
 
-          // Pipeline for Editor's Choice Shops
           editorsChoiceShops: [
-            { $match: { isEditorsChoice: true, isPromoted: { $ne: true } } }, // Exclude ads
+            { $match: { isEditorsChoice: true, isPromoted: { $ne: true } } },
             { $sort: { rating: -1 } },
             { $limit: 10 },
           ],
@@ -246,6 +240,68 @@ router.post('/discovery-search', async (req, res) => {
   }
 });
 
+router.post('/booking-requests', async (req, res) => {
+  try {
+    const { shopId, shopName, userTelegramId, userTelegramUsername, requestedTime ,userNumber,userTelegramNumber } = req.body;
+
+    if (!shopId || !userTelegramId || !requestedTime || !userNumber) {
+      return res.status(400).json({ message: 'Missing required information.' });
+    }
+
+    const newBookingRequest = new Booking({
+      shopId,
+      shopName,
+      userTelegramId,
+      userTelegramUsername,
+      requestedTime,
+      userNumber ,
+      userTelegramNumber, 
+      status: 'pending', 
+    });
+
+    await newBookingRequest.save();
+
+    
+    await sendBookingRequestToAdmin(newBookingRequest);
+
+    res.status(201).json({
+      message: 'Your booking request has been sent! You will receive a confirmation on Telegram.'
+    });
+
+  } catch (error) {
+    console.error('Error creating booking request:', error);
+    res.status(500).json({ message: 'Server error while creating booking request.' });
+  }
+});
+
+router.get('/service/:id/availability', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ message: 'Shop ID is required.' });
+    }
+    const shop = await ServicesModel.findById(id).select('workingHours');
+    if (!shop) {
+      return res.status(404).json({ message: 'Shop not found.' });
+    }
+    const confirmedBookings = await Booking.find({
+      shopId: id,
+      status: 'confirmed',
+      startTime: { $gte: new Date() },
+    }).select('startTime');
+
+    const bookedSlots = confirmedBookings.map(b => b.startTime.toISOString());
+
+    res.status(200).json({
+      workingHours: shop.workingHours,
+      bookedSlots: bookedSlots,
+    });
+
+  } catch (error) {
+    console.error('Error fetching shop availability:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 
 export default router;
