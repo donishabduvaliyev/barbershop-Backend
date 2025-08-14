@@ -242,7 +242,7 @@ router.post('/discovery-search', async (req, res) => {
 
 router.post('/booking-requests', async (req, res) => {
   try {
-    const { shopId, shopName, userTelegramId, userTelegramUsername, requestedTime ,userNumber,userTelegramNumber } = req.body;
+    const { shopId, shopName, userTelegramId, userTelegramUsername, requestedTime ,userNumber,userTelegramNumber  ,userName} = req.body;
 
     if (!shopId || !userTelegramId || !requestedTime || !userNumber) {
       return res.status(400).json({ message: 'Missing required information.' });
@@ -255,7 +255,8 @@ router.post('/booking-requests', async (req, res) => {
       userTelegramUsername,
       requestedTime,
       userNumber ,
-      userTelegramNumber, 
+      userTelegramNumber,
+      userName , 
       status: 'pending', 
     });
 
