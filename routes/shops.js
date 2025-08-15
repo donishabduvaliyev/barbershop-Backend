@@ -314,5 +314,15 @@ router.get('/shops/:id', async (req, res) => {
   }
 });
 
+router.get('/allShops', async (req, res) => {
+  try {
+    const shops = await ServicesModel.find({});
+    res.status(200).json(shops);
+  } catch (error) {
+    console.error('Error fetching shops:', error);
+    res.status(500).json({ message: 'Server error fetching shops' });
+  }
+})
+
 
 export default router;
