@@ -242,7 +242,7 @@ router.post('/discovery-search', async (req, res) => {
 
 router.post('/booking-requests', async (req, res) => {
   try {
-    const { shopId, shopName, userTelegramId, userTelegramUsername, requestedTime ,userNumber,userTelegramNumber  ,userName} = req.body;
+    const { shopId, shopName, userTelegramId, userTelegramUsername, requestedTime, userNumber, userTelegramNumber, userName } = req.body;
 
     if (!shopId || !userTelegramId || !requestedTime || !userNumber) {
       return res.status(400).json({ message: 'Missing required information.' });
@@ -254,15 +254,15 @@ router.post('/booking-requests', async (req, res) => {
       userTelegramId,
       userTelegramUsername,
       requestedTime,
-      userNumber ,
+      userNumber,
       userTelegramNumber,
-      userName , 
-      status: 'pending', 
+      userName,
+      status: 'pending',
     });
 
     await newBookingRequest.save();
 
-    
+
     await sendBookingRequestToAdmin(newBookingRequest);
 
     res.status(201).json({
@@ -300,6 +300,16 @@ router.get('/service/:id/availability', async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching shop availability:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/shops/:id', async (req, res) => {
+  try {
+    const shop = await Business.findById(req.params.id);
+    if (!shop) return res.status(404).json({ message: 'Shop not found' });
+    res.status(200).json(shop);
+  } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
 });
