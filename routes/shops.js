@@ -306,7 +306,7 @@ router.get('/service/:id/availability', async (req, res) => {
 
 router.get('/shops/:id', async (req, res) => {
   try {
-    const shop = await Business.findById(req.params.id);
+    const shop = await ServicesModel.findById(req.params.id);
     if (!shop) return res.status(404).json({ message: 'Shop not found' });
     res.status(200).json(shop);
   } catch (error) {
