@@ -10,7 +10,7 @@ const router = express.Router();
 
 router.post('/get-user', async (req, res) => {
     try {
-        const { id } = req.body; 
+        const { id } = req.body;
 
         if (!id) {
             return res.status(400).json({ message: 'Telegram ID is required' });
@@ -44,13 +44,13 @@ router.get('/profile/:telegramId', async (req, res) => {
         const { telegramId } = req.params;
 
         const [user, bookings] = await Promise.all([
-      
+
             User.findOne({ telegramId: telegramId }),
 
-         
+
             Booking.find({ userTelegramId: telegramId })
                 .sort({ createdAt: -1 })
-                .populate('shopId', 'name image') 
+                .populate('shopId', 'name image')
         ]);
 
         // Check if the user exists
@@ -67,6 +67,36 @@ router.get('/profile/:telegramId', async (req, res) => {
     } catch (error) {
         console.error('Error fetching profile data:', error);
         res.status(500).json({ message: 'Server error while fetching profile data.' });
+    }
+});
+
+
+
+router.patch('/bookings/:id/cancel', async (req, res) => {
+    try {
+        const { id } = req.params;
+        // In a real app, you would also verify that the logged-in user
+        // is the one who owns this booking before cancelling.
+
+        const bookingToCancel = await Booking.findById(id);
+
+        if (!bookingToCancel) {
+            return res.status(404).json({ message: 'Booking not found.' });
+        }
+
+        // Only allow cancellation if the booking is pending or confirmed
+        if (!['pending', 'confirmed'].includes(bookingToCancel.status)) {
+            return res.status(400).json({ message: 'This booking can no longer be cancelled.' });
+        }
+
+        bookingToCancel.status = 'cancelled';
+        await bookingToCancel.save();
+
+        res.status(200).json(bookingToCancel); // Return the updated booking
+
+    } catch (error) {
+        console.error('Error cancelling booking:', error);
+        res.status(500).json({ message: 'Server error while cancelling booking.' });
     }
 });
 
