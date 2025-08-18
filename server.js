@@ -7,6 +7,7 @@ import './config/telegramBot.js'
 
 // import authRoutes from './routes/auth.js';
 import shopRoutes from './routes/shops.js';
+import userRouter from './routes/userData.js';
 // import bookingRoutes from './routes/bookings.js';
 dotenv.config();
 
@@ -45,6 +46,7 @@ app.get('/', (req, res) => {
 
 // app.use('/api/auth', authRoutes);
 app.use('/api/shops', shopRoutes);
+app.use('/api/user/' , userRouter)
 // app.use('/api/bookings', bookingRoutes);
 
 // DB connection
