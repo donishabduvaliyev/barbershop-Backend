@@ -8,6 +8,7 @@ const token = process.env.TELEGRAM_BOT_TOKEN;
 const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
 const bot = new TelegramBot(token, { polling: true });
 const webAppUrl = 'https://barbershop-telegram-bot.netlify.app/';
+const pendingRejections = new Map();
 // start the bot
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
@@ -103,12 +104,9 @@ export const sendBookingRequestToAdmin = async (booking) => {
     *Shop:* ${booking.shopName}
     *User Name:* ${booking.userName}
     *User:* @${booking.userTelegramUsername || booking.userTelegramId}
-    *User Number:*${booking.userNumber}
-    *User Telegram number:* ${booking.userTelegramNumber}
+    *User Number:* ${booking.userNumber}
     *Time:* ${formattedTime}
   `;
-
-    // Create "Confirm" and "Reject" buttons
     const options = {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -120,47 +118,77 @@ export const sendBookingRequestToAdmin = async (booking) => {
             ],
         },
     };
-
     await bot.sendMessage(adminChatId, message, options);
 };
 
-// --- Listener for when the admin clicks a button ---
+// --- MODIFIED: Listener for when the admin clicks a button ---
 bot.on('callback_query', async (callbackQuery) => {
     const { data, message } = callbackQuery;
     const [action, bookingId] = data.split('_');
 
     const booking = await Booking.findById(bookingId);
     if (!booking) {
-        bot.sendMessage(adminChatId, 'Error: Booking not found.');
-        return;
+        bot.answerCallbackQuery(callbackQuery.id);
+        return bot.editMessageText('Error: This booking was not found. It may have been deleted.', {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+        });
     }
-
-    let newStatus;
-    let userMessage;
 
     if (action === 'confirm') {
-        newStatus = 'confirmed';
-        userMessage = `✅ Your booking for *${booking.shopName}* at ${new Date(booking.requestedTime).toLocaleTimeString()} has been confirmed!`;
+        booking.status = 'confirmed';
+        await booking.save();
+
+        const userMessage = `✅ Your booking for *${booking.shopName}* at ${new Date(booking.requestedTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} has been confirmed!`;
+        await bot.sendMessage(booking.userTelegramId, userMessage, { parse_mode: 'Markdown' });
+
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { // Removes the buttons
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+        });
+        bot.answerCallbackQuery(callbackQuery.id, { text: 'Booking Confirmed!' });
+
     } else if (action === 'reject') {
-        newStatus = 'rejected';
-        userMessage = `❌ Unfortunately, your booking for *${booking.shopName}* at ${new Date(booking.requestedTime).toLocaleTimeString()} could not be confirmed.`;
-    } else {
-        return;
+        // --- NEW LOGIC ---
+        // 1. Store the booking ID, noting that we're waiting for a reason from this admin.
+        pendingRejections.set(message.chat.id.toString(), bookingId);
+
+        // 2. Ask the admin for a reason using force_reply.
+        await bot.sendMessage(message.chat.id, 'Please provide a reason for rejecting this booking.', {
+            reply_markup: {
+                force_reply: true,
+            },
+        });
+        bot.answerCallbackQuery(callbackQuery.id);
     }
-
-    // Update the booking status in the database
-    booking.status = newStatus;
-    await booking.save();
-
-    // Notify the user of the result
-    await bot.sendMessage(booking.userTelegramId, userMessage, { parse_mode: 'Markdown' });
-
-    // Update the original admin message to show the action was taken
-    bot.editMessageText(`Action taken: *${newStatus.toUpperCase()}*`, {
-        chat_id: message.chat.id,
-        message_id: message.message_id,
-        parse_mode: 'Markdown',
-    });
 });
 
+// --- NEW: Listener for text messages to catch the rejection reason ---
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id.toString();
+
+    // Check if the message is a reply and if we are waiting for a reason from this admin
+    if (msg.reply_to_message && pendingRejections.has(chatId)) {
+        const bookingId = pendingRejections.get(chatId);
+        const reason = msg.text;
+
+        const booking = await Booking.findById(bookingId);
+        if (!booking) return; // Should not happen, but good to check
+
+        // 1. Update the booking in the database
+        booking.status = 'rejected';
+        booking.rejectionReason = reason;
+        await booking.save();
+
+        // 2. Send the detailed rejection message to the user
+        const userMessage = `❌ Unfortunately, your booking for *${booking.shopName}* could not be confirmed.\n\n*Reason:* ${reason}`;
+        await bot.sendMessage(booking.userTelegramId, userMessage, { parse_mode: 'Markdown' });
+
+        // 3. Confirm to the admin that the reason was sent
+        await bot.sendMessage(chatId, 'Rejection reason sent to the user.');
+
+        // 4. Clean up the state
+        pendingRejections.delete(chatId);
+    }
+})
 export default bot;
