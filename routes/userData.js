@@ -10,7 +10,7 @@ const router = express.Router();
 
 router.post('/get-user', async (req, res) => {
     try {
-        const { id } = req.body; // Telegram user ID from frontend
+        const { id } = req.body; 
 
         if (!id) {
             return res.status(400).json({ message: 'Telegram ID is required' });
@@ -43,15 +43,14 @@ router.get('/profile/:telegramId', async (req, res) => {
     try {
         const { telegramId } = req.params;
 
-        // Use Promise.all to fetch user details and their bookings in parallel for efficiency
         const [user, bookings] = await Promise.all([
-            // 1. Find the user's personal info
+      
             User.findOne({ telegramId: telegramId }),
 
-            // 2. Find all bookings linked to that user's ID
+         
             Booking.find({ userTelegramId: telegramId })
-                .sort({ createdAt: -1 }) // Show the most recent bookings first
-                .populate('shopId', 'name image') // Also fetch the name and image of the booked shop
+                .sort({ createdAt: -1 })
+                .populate('shopId', 'name image') 
         ]);
 
         // Check if the user exists
