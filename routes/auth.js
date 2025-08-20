@@ -5,9 +5,7 @@ import User from '../models/userdata.js';
 
 const router = express.Router();
 
-// @desc    Validate user data from Telegram and log them in
-// @route   POST /api/auth/validate-telegram
-// @access  Public
+
 router.post('/validate-telegram', async (req, res) => {
     const { initData } = req.body;
 
@@ -57,9 +55,6 @@ router.post('/validate-telegram', async (req, res) => {
             },
             { new: true, upsert: true }
         );
-
-        // Optional: Generate your own session token (like a JWT) here if you want
-        // For now, we'll just send back the user data.
         res.status(200).json({ message: 'User validated successfully', user });
 
     } catch (error) {

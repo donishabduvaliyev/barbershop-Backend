@@ -38,7 +38,6 @@ app.use(cors({
 // }));
 app.use(express.json());
 
-// Test route
 app.get('/', (req, res) => {
     res.send('Barbershop Booking API is running...');
 });
@@ -49,7 +48,6 @@ app.use('/api/shops', shopRoutes);
 app.use('/api/user' , userRouter)
 // app.use('/api/bookings', bookingRoutes);
 
-// DB connection
 mongoose.connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,

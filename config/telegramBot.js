@@ -94,7 +94,7 @@ bot.on('contact', async (msg) => {
     }
 });
 
-
+// order management on bot
 export const sendBookingRequestToAdmin = async (booking) => {
   const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
   const formattedTime = new Date(booking.requestedTime).toLocaleDateString("en-US", dateOptions);
@@ -117,8 +117,7 @@ export const sendBookingRequestToAdmin = async (booking) => {
   };
   await bot.sendMessage(adminChatId, message, options);
 };
-
-// --- MODIFIED: Listener for when the admin clicks a button ---
+// order acceptance 
 bot.on('callback_query', async (callbackQuery) => {
   const { data, message } = callbackQuery;
   const [action, bookingId] = data.split('_');
@@ -177,8 +176,7 @@ bot.on('callback_query', async (callbackQuery) => {
     bot.answerCallbackQuery(callbackQuery.id);
   }
 });
-
-// --- MODIFIED: Listener for text messages to catch the rejection reason ---
+// order rejection
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id.toString();
   

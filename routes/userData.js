@@ -75,16 +75,12 @@ router.get('/profile/:telegramId', async (req, res) => {
 router.patch('/bookings/:id/cancel', async (req, res) => {
     try {
         const { id } = req.params;
-        // In a real app, you would also verify that the logged-in user
-        // is the one who owns this booking before cancelling.
-
         const bookingToCancel = await Booking.findById(id);
 
         if (!bookingToCancel) {
             return res.status(404).json({ message: 'Booking not found.' });
         }
 
-        // Only allow cancellation if the booking is pending or confirmed
         if (!['pending', 'confirmed'].includes(bookingToCancel.status)) {
             return res.status(400).json({ message: 'This booking can no longer be cancelled.' });
         }
@@ -92,7 +88,7 @@ router.patch('/bookings/:id/cancel', async (req, res) => {
         bookingToCancel.status = 'cancelled';
         await bookingToCancel.save();
 
-        res.status(200).json(bookingToCancel); // Return the updated booking
+        res.status(200).json(bookingToCancel);
 
     } catch (error) {
         console.error('Error cancelling booking:', error);

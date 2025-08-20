@@ -7,7 +7,7 @@ const BookingSchema = new Schema({
   userTelegramId: { type: Number, required: true, index: true },
   userTelegramUsername: { type: String },
   userNumber: { type: String, required: true },
-  userTelegramNumber: { type: String }, // Optional field for user's Telegram number
+  userTelegramNumber: { type: String }, 
   requestedTime: { type: Date, required: true },
   status: {
     type: String,
