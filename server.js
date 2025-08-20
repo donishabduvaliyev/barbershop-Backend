@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
 
 // app.use('/api/auth', authRoutes);
 app.use('/api/shops', shopRoutes);
-app.use('/api/user/' , userRouter)
+app.use('/api/user' , userRouter)
 // app.use('/api/bookings', bookingRoutes);
 
 // DB connection
