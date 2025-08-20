@@ -3,9 +3,11 @@ import express from 'express';
 import User from '../models/userdata.js';
 // import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
+import bot from '../config/telegramBot.js';
 
 
 const router = express.Router();
+const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
 
 
 router.post('/get-user', async (req, res) => {
@@ -87,6 +89,23 @@ router.patch('/bookings/:id/cancel', async (req, res) => {
 
         bookingToCancel.status = 'cancelled';
         await bookingToCancel.save();
+
+        // --- 3. ADDED: Send notification to the admin chat ---
+        try {
+            const formattedTime = new Date(bookingToCancel.requestedTime).toLocaleString();
+            const notificationMessage = `
+                ⚠️ *Booking Canceled by User* ⚠️
+                *Shop:* ${bookingToCancel.shopName}
+                *User:* ${bookingToCancel.userName || bookingToCancel.userTelegramUsername || 'N/A'}
+                *Time:* ${formattedTime}
+            `;
+            await bot.sendMessage(adminChatId, notificationMessage, { parse_mode: 'Markdown' });
+        } catch (notificationError) {
+            // Log the error but don't fail the API request.
+            // The user's cancellation was successful even if the admin notification fails.
+            console.error('Failed to send cancellation notification to admin:', notificationError);
+        }
+        // --- End of added section ---
 
         res.status(200).json(bookingToCancel);
 
