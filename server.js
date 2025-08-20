@@ -19,7 +19,7 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: 'https://barbershop-telegram-bot.netlify.app',
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE' , 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
