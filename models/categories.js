@@ -5,7 +5,7 @@ const LocalizedStringSchema = new Schema({
     en: { type: String, required: true },
     uz: { type: String, required: true },
     ru: { type: String, required: true },
-}, { _id: false }); t
+}, { _id: false });
 
 
 const CategorySchema = new Schema({

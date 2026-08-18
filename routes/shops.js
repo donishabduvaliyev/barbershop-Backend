@@ -58,7 +58,7 @@ router.post('/search-shops', async (req, res) => {
 
     // Add search by name using a case-insensitive regex
     if (name) {
-      matchQuery.name.ru = { $regex: name, $options: 'i' };
+      matchQuery['name.ru'] = { $regex: name, $options: 'i' };
     }
     // ... add other filters like category, priceTiers, etc.
     if (category) matchQuery.category = category;
@@ -180,7 +180,7 @@ router.post('/discovery-search', async (req, res) => {
 
     let nearYouShops = [];
     if (userLocation && userLocation.coordinates) {
-      nearYouShops = await Business.aggregate([
+      nearYouShops = await ServicesModel.aggregate([
         {
           $geoNear: {
             near: {
@@ -260,10 +260,10 @@ router.get('/service/:id/availability', async (req, res) => {
     const confirmedBookings = await Booking.find({
       shopId: id,
       status: 'confirmed',
-      startTime: { $gte: new Date() },
-    }).select('startTime');
+      requestedTime: { $gte: new Date() },
+    }).select('requestedTime');
 
-    const bookedSlots = confirmedBookings.map(b => b.startTime.toISOString());
+    const bookedSlots = confirmedBookings.map(b => b.requestedTime.toISOString());
 
     res.status(200).json({
       workingHours: shop.workingHours,
