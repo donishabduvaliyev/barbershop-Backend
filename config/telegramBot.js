@@ -6,8 +6,17 @@ import Booking from '../models/bookingHistory.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
-const bot = new TelegramBot(token, { polling: true });
-const webAppUrl = 'https://barbershop-telegram-bot.netlify.app/';
+const bot = new TelegramBot(token, { polling: false });
+let pollingStarted = false;
+
+export const startBot = () => {
+  if (!pollingStarted) {
+    pollingStarted = true;
+    bot.startPolling();
+  }
+};
+
+const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 const pendingRejections = new Map();
 // start the bot
 bot.onText(/\/start/, async (msg) => {
