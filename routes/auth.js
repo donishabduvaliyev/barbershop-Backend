@@ -1,7 +1,7 @@
 // In routes/auth.js
 import express from 'express';
-import crypto from 'crypto';
 import User from '../models/userdata.js';
+import { verifyTelegramInitData } from '../middleware/telegramAuth.js';
 
 const router = express.Router();
 
@@ -14,36 +14,10 @@ router.post('/validate-telegram', async (req, res) => {
     }
 
     try {
-        // 1. Create a string from all received data pairs
-        const params = new URLSearchParams(initData);
-        const hash = params.get('hash');
-        params.delete('hash'); // remove hash from the list of parameters
-
-        // 2. Sort parameters alphabetically
-        const sortedKeys = Array.from(params.keys()).sort();
-        const dataCheckString = sortedKeys
-            .map(key => `${key}=${params.get(key)}`)
-            .join('\n');
-
-        // 3. Create the secret key
-        const secretKey = crypto
-            .createHmac('sha256', 'WebAppData')
-            .update(process.env.TELEGRAM_BOT_TOKEN)
-            .digest();
-
-        // 4. Calculate the hash of the data check string
-        const calculatedHash = crypto
-            .createHmac('sha256', secretKey)
-            .update(dataCheckString)
-            .digest('hex');
-
-        // 5. Compare the hashes
-        if (calculatedHash !== hash) {
+        const userObject = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN);
+        if (!userObject) {
             return res.status(401).json({ message: 'Invalid data: hash does not match' });
         }
-
-        // 6. If hash is valid, the data is authentic. Find or create the user.
-        const userObject = JSON.parse(params.get('user'));
 
         const user = await User.findOneAndUpdate(
             { telegramId: userObject.id.toString() },

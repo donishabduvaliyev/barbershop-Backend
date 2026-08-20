@@ -3,6 +3,7 @@ import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import { sendBookingRequestToAdmin } from '../config/telegramBot.js';
+import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 
 const router = express.Router();
 
@@ -212,11 +213,17 @@ router.post('/discovery-search', async (req, res) => {
   }
 });
 
-router.post('/booking-requests', async (req, res) => {
+router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
   try {
-    const { shopId, shopName, userTelegramId, userTelegramUsername, requestedTime, userNumber, userTelegramNumber, userName } = req.body;
+    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName } = req.body;
 
-    if (!shopId || !userTelegramId || !requestedTime || !userNumber) {
+    // Trust the Telegram identity verified by requireTelegramAuth, never the
+    // client-supplied userTelegramId/username — otherwise anyone could book
+    // (or impersonate another user) without ever opening the app in Telegram.
+    const userTelegramId = req.telegramUser.id;
+    const userTelegramUsername = req.telegramUser.username || '';
+
+    if (!shopId || !requestedTime || !userNumber) {
       return res.status(400).json({ message: 'Missing required information.' });
     }
 
@@ -234,8 +241,13 @@ router.post('/booking-requests', async (req, res) => {
 
     await newBookingRequest.save();
 
-
-    await sendBookingRequestToAdmin(newBookingRequest);
+    // The booking is already saved at this point — a failure to notify the
+    // admin shouldn't make the client think their request wasn't received.
+    try {
+      await sendBookingRequestToAdmin(newBookingRequest);
+    } catch (notifyError) {
+      console.error('Failed to notify admin of new booking:', notifyError);
+    }
 
     res.status(201).json({
       message: 'Your booking request has been sent! You will receive a confirmation on Telegram.'

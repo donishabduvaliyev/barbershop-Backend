@@ -5,8 +5,19 @@ import cors from 'cors';
 import { startBot } from './config/telegramBot.js';
 import shopRoutes from './routes/shops.js';
 import userRouter from './routes/userData.js';
+import authRouter from './routes/auth.js';
 
 dotenv.config();
+
+// Last-resort safety net: a single failed Telegram API call (e.g. messaging
+// a chat id that was never real, or a user who blocked the bot) must never
+// take the whole server down. Log it and keep serving requests.
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception:', err);
+});
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -25,6 +36,7 @@ app.get('/', (req, res) => {
 
 app.use('/api/shops', shopRoutes);
 app.use('/api/user', userRouter);
+app.use('/api/auth', authRouter);
 
 mongoose.connect(process.env.MONGO_URI, {
 }).then(() => {
