@@ -14,6 +14,14 @@ const ServiceSchema = new Schema({
   durationMinutes: { type: Number, required: true },
 }, { _id: false });
 
+const StaffSchema = new Schema({
+  name: { type: String, required: true },
+  title: { type: String, default: '' },
+  photo: { type: String, default: '' },
+  rating: { type: Number, default: 0 },
+  reviewsCount: { type: Number, default: 0 },
+}, { timestamps: true });
+
 // Улучшенная схема для рабочих часов
 const WorkingHoursSchema = new Schema({
   days: [{
@@ -55,6 +63,9 @@ const BusinessSchema = new Schema({
   },
   services: [ServiceSchema],
   workingHours: [WorkingHoursSchema],
+  // Empty by default — the "Meet the Team" section only renders once a shop
+  // actually has staff entries, and booking only offers a staff picker then too.
+  staff: { type: [StaffSchema], default: [] },
   priceTier: {
     type: Number,
     min: 1,

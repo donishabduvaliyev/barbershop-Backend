@@ -3,6 +3,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 import User from '../models/userdata.js';
 import Booking from '../models/bookingHistory.js';
+import Review from '../models/review.js';
+import ServicesModel from '../models/shopData.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
@@ -18,9 +20,9 @@ export const startBot = () => {
 
 const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 const pendingRejections = new Map();
-const DIVIDER = '┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄';
+export const DIVIDER = '┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄';
 
-const formatDateTime = (date) =>
+export const formatDateTime = (date) =>
   new Date(date).toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
@@ -37,6 +39,9 @@ const formatBookingCard = (booking, statusLine) => {
     `📞 *Phone:*  ${booking.userNumber}`,
     `🗓 *Time:*  ${formatDateTime(booking.requestedTime)}`,
   ];
+  if (booking.staffName) {
+    lines.push(`✂️ *Barber:*  ${booking.staffName}`);
+  }
   if (statusLine) {
     lines.push(DIVIDER, statusLine);
   }
@@ -154,19 +159,50 @@ export const sendBookingRequestToAdmin = async (booking) => {
 // message (user blocked the bot, deleted their account, or — historically,
 // before auth was enforced — was never a real chat at all). None of that
 // should ever be allowed to crash the bot or block the admin-facing flow.
-const notifyUser = async (chatId, text) => {
+export const notifyUser = async (chatId, text, extra = {}) => {
   try {
-    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
   } catch (err) {
     console.error(`Failed to message Telegram user ${chatId}:`, err.message);
   }
+};
+
+const buildStarKeyboard = (prefix, bookingId) => ({
+  inline_keyboard: [
+    [1, 2, 3, 4, 5].map((n) => ({ text: '⭐'.repeat(n), callback_data: `${prefix}_${bookingId}_${n}` })),
+  ],
+});
+
+// Called by jobs/reminders.js as bookings cross the 24h/3h-before thresholds.
+export const sendReminder = async (booking, whenLabel) => {
+  const message = [
+    '⏰ *Appointment Reminder*',
+    DIVIDER,
+    `Don't forget — your visit to *${booking.shopName}* is ${whenLabel}.`,
+    `🗓 ${formatDateTime(booking.requestedTime)}`,
+    booking.staffName ? `✂️ *Barber:* ${booking.staffName}` : null,
+  ].filter(Boolean).join('\n');
+  await notifyUser(booking.userTelegramId, message);
+};
+
+// Called by jobs/reminders.js once a confirmed booking's time has passed —
+// kicks off the rating flow via inline star buttons.
+export const sendRatingRequest = async (booking) => {
+  const message = [
+    '💈 *How was your visit?*',
+    DIVIDER,
+    `Tell us how your appointment at *${booking.shopName}* went:`,
+  ].join('\n');
+  await notifyUser(booking.userTelegramId, message, {
+    reply_markup: buildStarKeyboard('rate', booking._id),
+  });
 };
 
 // order acceptance
 bot.on('callback_query', async (callbackQuery) => {
   try {
     const { data, message } = callbackQuery;
-    const [action, bookingId] = data.split('_');
+    const [action, bookingId, starsRaw] = data.split('_');
 
     const booking = await Booking.findById(bookingId);
     if (!booking) {
@@ -212,6 +248,68 @@ bot.on('callback_query', async (callbackQuery) => {
         reply_markup: { force_reply: true },
       });
       bot.answerCallbackQuery(callbackQuery.id);
+
+    } else if (action === 'rate') {
+      const stars = parseInt(starsRaw, 10);
+
+      // A customer can only tap one of these buttons once — Telegram doesn't
+      // remove buttons on tap, so guard against a double-submit re-editing
+      // the same review (editMessageText below removes them from the UI,
+      // but a race between two rapid taps could still land here twice).
+      const existing = await Review.findOne({ bookingId: booking._id });
+      if (!existing) {
+        await Review.create({ bookingId: booking._id, shopId: booking.shopId, userTelegramId: booking.userTelegramId, rating: stars });
+
+        const shop = await ServicesModel.findById(booking.shopId).select('rating reviewsCount');
+        if (shop) {
+          const newRating = (shop.rating * shop.reviewsCount + stars) / (shop.reviewsCount + 1);
+          shop.rating = Math.round(newRating * 10) / 10;
+          shop.reviewsCount += 1;
+          await shop.save();
+        }
+      }
+
+      bot.editMessageText(`💈 *How was your visit?*\n${DIVIDER}\nThanks for your feedback! You rated it ${'⭐'.repeat(stars)}`, {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        parse_mode: 'Markdown',
+      });
+
+      if (booking.staffId && booking.staffName && !existing?.staffRating) {
+        await bot.sendMessage(message.chat.id, `And how was *${booking.staffName}*?`, {
+          parse_mode: 'Markdown',
+          reply_markup: buildStarKeyboard('staffrate', booking._id),
+        });
+      }
+      bot.answerCallbackQuery(callbackQuery.id, { text: 'Thanks for rating!' });
+
+    } else if (action === 'staffrate') {
+      const stars = parseInt(starsRaw, 10);
+
+      const review = await Review.findOneAndUpdate(
+        { bookingId: booking._id },
+        { $set: { staffRating: stars, staffId: booking.staffId } },
+        { upsert: true }
+      );
+
+      // Only fold this into the staff member's running average once per booking.
+      if (booking.staffId && !review?.staffRating) {
+        const shop = await ServicesModel.findById(booking.shopId).select('staff');
+        const staffMember = shop?.staff?.id(booking.staffId);
+        if (staffMember) {
+          const newStaffRating = (staffMember.rating * staffMember.reviewsCount + stars) / (staffMember.reviewsCount + 1);
+          staffMember.rating = Math.round(newStaffRating * 10) / 10;
+          staffMember.reviewsCount += 1;
+          await shop.save();
+        }
+      }
+
+      bot.editMessageText(`Thanks! You rated *${booking.staffName}* ${'⭐'.repeat(stars)}`, {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        parse_mode: 'Markdown',
+      });
+      bot.answerCallbackQuery(callbackQuery.id, { text: 'Thanks!' });
     }
   } catch (err) {
     console.error('Error handling booking callback:', err);

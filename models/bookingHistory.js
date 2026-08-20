@@ -18,6 +18,12 @@ const BookingSchema = new Schema({
   rejectionReason: {
     type: String,
   },
+  staffId: { type: Schema.Types.ObjectId, default: null },
+  staffName: { type: String, default: '' },
+  // Reminder/completion job bookkeeping — see jobs/reminders.js
+  reminded24h: { type: Boolean, default: false },
+  reminded3h: { type: Boolean, default: false },
+  ratingRequested: { type: Boolean, default: false },
 
   adminNotes: { type: String },
 }, { timestamps: true });

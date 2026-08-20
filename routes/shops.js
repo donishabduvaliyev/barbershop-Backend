@@ -215,7 +215,7 @@ router.post('/discovery-search', async (req, res) => {
 
 router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
   try {
-    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName } = req.body;
+    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId } = req.body;
 
     // Trust the Telegram identity verified by requireTelegramAuth, never the
     // client-supplied userTelegramId/username — otherwise anyone could book
@@ -227,6 +227,19 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
       return res.status(400).json({ message: 'Missing required information.' });
     }
 
+    // A staffId is only ever honored if it actually belongs to this shop —
+    // never trust a client-supplied name alongside it.
+    let resolvedStaffId = null;
+    let resolvedStaffName = '';
+    if (staffId) {
+      const shop = await ServicesModel.findById(shopId).select('staff');
+      const staffMember = shop?.staff?.id(staffId);
+      if (staffMember) {
+        resolvedStaffId = staffMember._id;
+        resolvedStaffName = staffMember.name;
+      }
+    }
+
     const newBookingRequest = new Booking({
       shopId,
       shopName,
@@ -236,6 +249,8 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
       userNumber,
       userTelegramNumber,
       userName,
+      staffId: resolvedStaffId,
+      staffName: resolvedStaffName,
       status: 'pending',
     });
 

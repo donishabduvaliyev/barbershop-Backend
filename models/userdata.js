@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
     phone: String,
     email: String,
     avatar: String,
+    favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ServicesModel' }],
 }, { timestamps: true });
 
 export default mongoose.model('User', userSchema, 'user-data-barbershop');

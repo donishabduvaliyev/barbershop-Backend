@@ -6,6 +6,7 @@ import { startBot } from './config/telegramBot.js';
 import shopRoutes from './routes/shops.js';
 import userRouter from './routes/userData.js';
 import authRouter from './routes/auth.js';
+import { startReminderJob } from './jobs/reminders.js';
 
 dotenv.config();
 
@@ -42,6 +43,7 @@ mongoose.connect(process.env.MONGO_URI, {
 }).then(() => {
     console.log('✅ MongoDB connected');
     startBot();
+    startReminderJob();
     app.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
