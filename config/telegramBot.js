@@ -18,23 +18,53 @@ export const startBot = () => {
 
 const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 const pendingRejections = new Map();
+const DIVIDER = '┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄';
+
+const formatDateTime = (date) =>
+  new Date(date).toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+
+// Single source of truth for the admin-facing booking card, reused for the
+// initial post and every subsequent status edit so the layout never drifts.
+const formatBookingCard = (booking, statusLine) => {
+  const lines = [
+    '💈 *TEZKOR* · New Booking Request',
+    DIVIDER,
+    `🏪 *Shop:*  ${booking.shopName}`,
+    `👤 *Client:*  ${booking.userName}`,
+    `🔗 *Telegram:*  @${booking.userTelegramUsername || booking.userTelegramId}`,
+    `📞 *Phone:*  ${booking.userNumber}`,
+    `🗓 *Time:*  ${formatDateTime(booking.requestedTime)}`,
+  ];
+  if (statusLine) {
+    lines.push(DIVIDER, statusLine);
+  }
+  return lines.join('\n');
+};
+
 // start the bot
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const telegramId = msg.from.id.toString();
 
-    bot.sendMessage(chatId, "Welcome! Please share your phone number to register:", {
-        reply_markup: {
-            keyboard: [
-                [{
-                    text: "📱 Send My Phone Number",
-                    request_contact: true,
-                }],
-            ],
-            resize_keyboard: true,
-            one_time_keyboard: true,
-        },
-    });
+    bot.sendMessage(
+        chatId,
+        '👋 *Welcome to Tezkor*\n\nBook barbershops, salons and spas in seconds — right from Telegram.\n\nShare your phone number to get started:',
+        {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                keyboard: [
+                    [{
+                        text: "📱 Send My Phone Number",
+                        request_contact: true,
+                    }],
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: true,
+            },
+        }
+    );
 });
 // add contact to db
 bot.on('contact', async (msg) => {
@@ -84,17 +114,22 @@ bot.on('contact', async (msg) => {
             console.log("New user saved successfully in DB."); // <-- LOG 8
         }
 
-        bot.sendMessage(chatId, "✅ You are now registered! You can open the app below.", {
-            reply_markup: {
-                keyboard: [
-                    [{
-                        text: "🚀 Tezkor Namangan",
-                        web_app: { url: webAppUrl } // <-- THIS IS THE MAGIC
-                    }]
-                ],
-                resize_keyboard: true
+        bot.sendMessage(
+            chatId,
+            "✨ *You're all set!*\n\nYour account is ready — tap below to start booking.",
+            {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    keyboard: [
+                        [{
+                            text: "🚀 Open Tezkor",
+                            web_app: { url: webAppUrl } // <-- THIS IS THE MAGIC
+                        }]
+                    ],
+                    resize_keyboard: true
+                }
             }
-        });
+        );
 
     } catch (error) {
         // This is the most important log. Let's see the full error.
@@ -105,17 +140,6 @@ bot.on('contact', async (msg) => {
 
 // order management on bot
 export const sendBookingRequestToAdmin = async (booking) => {
-  const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-  const formattedTime = new Date(booking.requestedTime).toLocaleDateString("en-US", dateOptions);
-  
-  const message = `
-    📢 *New Booking Request* 📢
-    *Shop:* ${booking.shopName}
-    *User Name:* ${booking.userName}
-    *User:* @${booking.userTelegramUsername || booking.userTelegramId}
-    *User Number:* ${booking.userNumber}
-    *Time:* ${formattedTime}
-  `;
   const options = {
     parse_mode: 'Markdown',
     reply_markup: {
@@ -124,7 +148,7 @@ export const sendBookingRequestToAdmin = async (booking) => {
       ],
     },
   };
-  await bot.sendMessage(adminChatId, message, options);
+  await bot.sendMessage(adminChatId, formatBookingCard(booking), options);
 };
 // order acceptance 
 bot.on('callback_query', async (callbackQuery) => {
@@ -134,52 +158,44 @@ bot.on('callback_query', async (callbackQuery) => {
   const booking = await Booking.findById(bookingId);
   if (!booking) {
     bot.answerCallbackQuery(callbackQuery.id);
-    return bot.editMessageText('Error: This booking was not found.', {
+    return bot.editMessageText('⚠️ This booking could not be found.', {
       chat_id: message.chat.id,
       message_id: message.message_id,
     });
   }
 
-  // --- FIX: Re-create the original message content to reuse it ---
-  const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-  const formattedTime = new Date(booking.requestedTime).toLocaleDateString("en-US", dateOptions);
-  const originalMessageText = `
-    📢 *New Booking Request* 📢
-    *Shop:* ${booking.shopName}
-    *User Name:* ${booking.userName}
-    *User:* @${booking.userTelegramUsername || booking.userTelegramId}
-    *User Number:* ${booking.userNumber}
-    *Time:* ${formattedTime}
-  `;
-
   if (action === 'confirm') {
     booking.status = 'confirmed';
     await booking.save();
-    
-    const userMessage = `✅ Your booking for *${booking.shopName}* at ${new Date(booking.requestedTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} has been confirmed!`;
+
+    const userMessage = [
+      '✅ *Booking Confirmed*',
+      DIVIDER,
+      `Your appointment at *${booking.shopName}* is set for 🗓 ${formatDateTime(booking.requestedTime)}.`,
+      '',
+      'See you there! 💈',
+    ].join('\n');
     await bot.sendMessage(booking.userTelegramId, userMessage, { parse_mode: 'Markdown' });
 
-    // --- FIX: Edit the message text to show the new status AND remove the buttons ---
-    bot.editMessageText(`${originalMessageText}\n\n*Status: CONFIRMED ✅*`, {
+    // Edit the admin's card in place — omitting reply_markup removes the buttons.
+    bot.editMessageText(formatBookingCard(booking, '🟢 *CONFIRMED*'), {
       chat_id: message.chat.id,
       message_id: message.message_id,
       parse_mode: 'Markdown',
-      // By not including a reply_markup, the buttons are removed automatically
     });
-    bot.answerCallbackQuery(callbackQuery.id, { text: 'Booking Confirmed!' });
+    bot.answerCallbackQuery(callbackQuery.id, { text: 'Booking confirmed!' });
 
   } else if (action === 'reject') {
-    // --- FIX: Immediately edit the message to remove buttons and show a "waiting" state ---
-    bot.editMessageText(`${originalMessageText}\n\n*Status: PENDING REASON... ⏳*`, {
+    bot.editMessageText(formatBookingCard(booking, '🟡 *Awaiting rejection reason…*'), {
       chat_id: message.chat.id,
       message_id: message.message_id,
       parse_mode: 'Markdown',
     });
-    
+
     // Store both the bookingId and the original message_id to edit later
     pendingRejections.set(message.chat.id.toString(), { bookingId, originalMessageId: message.message_id });
-    
-    await bot.sendMessage(message.chat.id, 'Please provide a reason for rejecting this booking.', {
+
+    await bot.sendMessage(message.chat.id, '✍️ Please reply with a reason for rejecting this booking.', {
       reply_markup: { force_reply: true },
     });
     bot.answerCallbackQuery(callbackQuery.id);
@@ -199,27 +215,23 @@ bot.on('message', async (msg) => {
     booking.status = 'rejected';
     booking.rejectionReason = reason;
     await booking.save();
-    
-    const userMessage = `❌ Unfortunately, your booking for *${booking.shopName}* could not be confirmed.\n\n*Reason:* ${reason}`;
+
+    const userMessage = [
+      '❌ *Booking Update*',
+      DIVIDER,
+      `We couldn't confirm your booking at *${booking.shopName}* for 🗓 ${formatDateTime(booking.requestedTime)}.`,
+      '',
+      `*Reason:* ${reason}`,
+      '',
+      'Feel free to pick another time that works for you.',
+    ].join('\n');
     await bot.sendMessage(booking.userTelegramId, userMessage, { parse_mode: 'Markdown' });
-    
-    await bot.sendMessage(chatId, 'Rejection reason sent to the user.');
+
+    await bot.sendMessage(chatId, '✅ Rejection reason sent to the client.');
     pendingRejections.delete(chatId);
 
-    // --- FIX: Now we edit the *original* message with the final rejection status ---
-    const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    const formattedTime = new Date(booking.requestedTime).toLocaleDateString("en-US", dateOptions);
-    const finalMessageText = `
-      📢 *New Booking Request* 📢
-      *Shop:* ${booking.shopName}
-      *User Name:* ${booking.userName}
-      *User:* @${booking.userTelegramUsername || booking.userTelegramId}
-      *User Number:* ${booking.userNumber}
-      *Time:* ${formattedTime}
-      \n\n*Status: REJECTED ❌*\n*Reason:* ${reason}
-    `;
-
-    bot.editMessageText(finalMessageText, {
+    // Edit the original admin card with the final rejection status.
+    bot.editMessageText(formatBookingCard(booking, `🔴 *REJECTED*\n*Reason:* ${reason}`), {
         chat_id: chatId,
         message_id: originalMessageId, // Use the saved message ID
         parse_mode: 'Markdown',

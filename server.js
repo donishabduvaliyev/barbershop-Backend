@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({
     origin: 'https://barbershop-telegram-bot.netlify.app',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedheaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning']
 }));
 
 app.use(express.json());
