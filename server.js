@@ -83,9 +83,21 @@ setIO(io);
 mongoose.connect(process.env.MONGO_URI, {
 }).then(() => {
     console.log('✅ MongoDB connected');
-    startBot();
-    startShopControlBot();
-    startReminderJob();
+    // Both bot tokens only support one active poller each — if a production
+    // deployment is already polling the same token (the usual case when
+    // developing locally against the shared/live database), starting a
+    // second poller here just fights it for updates. Opt out with this flag
+    // when you only need the REST/Socket.io API locally.
+    if (process.env.DISABLE_TELEGRAM_POLLING === 'true') {
+        // Also skip the reminder sweep — it sends real messages (reminders,
+        // rating requests) based on real booking data, so a second local
+        // instance running it alongside production would double-send.
+        console.log('ℹ️ DISABLE_TELEGRAM_POLLING=true — skipping bot polling and the reminder job.');
+    } else {
+        startBot();
+        startShopControlBot();
+        startReminderJob();
+    }
     httpServer.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
