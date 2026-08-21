@@ -34,7 +34,7 @@ const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
     'https://barbershop-telegram-bot.netlify.app',
-    "https://admin-healthcare-namangan.netlify.app",
+    'https://admin-healthcare-namangan.netlify.app',
     process.env.ADMIN_PANEL_URL,
     'http://localhost:5173',
     'http://localhost:5174',
