@@ -16,8 +16,9 @@ router.get('/overview', async (req, res) => {
     const from = req.query.from ? new Date(req.query.from) : new Date(new Date().setDate(new Date().getDate() - 30));
     const to = req.query.to ? new Date(req.query.to) : new Date();
 
-    const dateMatch = { shopId, requestedTime: { $gte: from, $lte: to } };
-    const revenueMatch = { ...dateMatch, status: REVENUE_STATUS };
+
+const dateMatch = { shopId, requestedTime: { $gte: from } };
+const revenueMatch = { shopId, requestedTime: { $gte: from, $lte: to }, status: REVENUE_STATUS };
 
     const [statusBreakdown, revenueOverTime, topServices, topStaff, totals] = await Promise.all([
       Booking.aggregate([
