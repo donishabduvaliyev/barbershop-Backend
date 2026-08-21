@@ -1,5 +1,6 @@
 import Booking from '../models/bookingHistory.js';
-import { sendReminder, sendRatingRequest } from '../config/telegramBot.js';
+import { sendReminder } from '../config/telegramBot.js';
+import { completeBooking } from '../services/bookingActions.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const COMPLETION_GRACE_MS = 30 * 60 * 1000; // treat as completed 30 min after the slot
@@ -51,13 +52,7 @@ async function runReminderSweep() {
       requestedTime: { $lte: completionCutoff },
     });
     for (const booking of toComplete) {
-      booking.status = 'completed';
-      await booking.save();
-      if (!booking.ratingRequested) {
-        await sendRatingRequest(booking);
-        booking.ratingRequested = true;
-        await booking.save();
-      }
+      await completeBooking(booking._id);
     }
   } catch (err) {
     console.error('Completion sweep failed:', err);

@@ -4,12 +4,13 @@ import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import Review from '../models/review.js';
-import bot from '../config/telegramBot.js';
+import shopControlBot from '../config/shopControlBot.js';
+import { editBookingCard } from '../config/notificationBridge.js';
+import { emitToShop } from '../config/socket.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 
 
 const router = express.Router();
-const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
 
 
 router.post('/get-user', async (req, res) => {
@@ -157,22 +158,27 @@ router.patch('/bookings/:id/cancel', requireTelegramAuth, async (req, res) => {
         bookingToCancel.status = 'cancelled';
         await bookingToCancel.save();
 
-        // --- 3. ADDED: Send notification to the admin chat ---
+        // Notify the shop's own owner (not a global admin chat) that their
+        // customer cancelled, and update the original Telegram card in place.
         try {
-            const formattedTime = new Date(bookingToCancel.requestedTime).toLocaleString();
-            const notificationMessage = `
-                ⚠️ *Booking Canceled by User* ⚠️
-                *Shop:* ${bookingToCancel.shopName}
-                *User:* ${bookingToCancel.userName || bookingToCancel.userTelegramUsername || 'N/A'}
-                *Time:* ${formattedTime}
-            `;
-            await bot.sendMessage(adminChatId, notificationMessage, { parse_mode: 'Markdown' });
+            const shop = await ServicesModel.findById(bookingToCancel.shopId).select('ownerTelegramId');
+            if (shop?.ownerTelegramId) {
+                const formattedTime = new Date(bookingToCancel.requestedTime).toLocaleString();
+                const notificationMessage = [
+                    '⚠️ *Booking Cancelled by Client*',
+                    `*Shop:* ${bookingToCancel.shopName}`,
+                    `*Client:* ${bookingToCancel.userName || bookingToCancel.userTelegramUsername || 'N/A'}`,
+                    `*Time:* ${formattedTime}`,
+                ].join('\n');
+                await shopControlBot.sendMessage(shop.ownerTelegramId, notificationMessage, { parse_mode: 'Markdown' });
+            }
+            await editBookingCard(bookingToCancel, '⚪️ *CANCELLED BY CLIENT*');
+            emitToShop(bookingToCancel.shopId, 'appointment:update', bookingToCancel);
         } catch (notificationError) {
             // Log the error but don't fail the API request.
-            // The user's cancellation was successful even if the admin notification fails.
-            console.error('Failed to send cancellation notification to admin:', notificationError);
+            // The user's cancellation was successful even if the owner notification fails.
+            console.error('Failed to send cancellation notification to shop owner:', notificationError);
         }
-        // --- End of added section ---
 
         res.status(200).json(bookingToCancel);
 

@@ -2,7 +2,7 @@ import express from 'express';
 import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
-import { sendBookingRequestToAdmin } from '../config/telegramBot.js';
+import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 
 const router = express.Router();
@@ -215,7 +215,7 @@ router.post('/discovery-search', async (req, res) => {
 
 router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
   try {
-    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId } = req.body;
+    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId, serviceId } = req.body;
 
     // Trust the Telegram identity verified by requireTelegramAuth, never the
     // client-supplied userTelegramId/username — otherwise anyone could book
@@ -223,21 +223,27 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
     const userTelegramId = req.telegramUser.id;
     const userTelegramUsername = req.telegramUser.username || '';
 
-    if (!shopId || !requestedTime || !userNumber) {
+    if (!shopId || !requestedTime || !userNumber || !serviceId) {
       return res.status(400).json({ message: 'Missing required information.' });
     }
 
-    // A staffId is only ever honored if it actually belongs to this shop —
-    // never trust a client-supplied name alongside it.
+    // A staffId/serviceId is only ever honored if it actually belongs to
+    // this shop — never trust client-supplied name/price alongside it.
+    const shop = await ServicesModel.findById(shopId).select('staff services');
+
     let resolvedStaffId = null;
     let resolvedStaffName = '';
     if (staffId) {
-      const shop = await ServicesModel.findById(shopId).select('staff');
       const staffMember = shop?.staff?.id(staffId);
       if (staffMember) {
         resolvedStaffId = staffMember._id;
         resolvedStaffName = staffMember.name;
       }
+    }
+
+    const service = shop?.services?.id(serviceId);
+    if (!service) {
+      return res.status(400).json({ message: 'Selected service is no longer available.' });
     }
 
     const newBookingRequest = new Booking({
@@ -251,17 +257,20 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
       userName,
       staffId: resolvedStaffId,
       staffName: resolvedStaffName,
+      serviceId: service._id,
+      serviceName: service.name?.en || service.name?.ru || service.name?.uz || '',
+      price: service.price,
       status: 'pending',
     });
 
     await newBookingRequest.save();
 
     // The booking is already saved at this point — a failure to notify the
-    // admin shouldn't make the client think their request wasn't received.
+    // shop owner shouldn't make the client think their request wasn't received.
     try {
-      await sendBookingRequestToAdmin(newBookingRequest);
+      await notifyShopOwnerOfNewBooking(newBookingRequest);
     } catch (notifyError) {
-      console.error('Failed to notify admin of new booking:', notifyError);
+      console.error('Failed to notify shop owner of new booking:', notifyError);
     }
 
     res.status(201).json({

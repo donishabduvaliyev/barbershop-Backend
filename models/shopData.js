@@ -12,7 +12,7 @@ const ServiceSchema = new Schema({
   name: LocalizedStringSchema,
   price: { type: Number, required: true },
   durationMinutes: { type: Number, required: true },
-}, { _id: false });
+}, { timestamps: true });
 
 const StaffSchema = new Schema({
   name: { type: String, required: true },
@@ -72,14 +72,20 @@ const BusinessSchema = new Schema({
     max: 4,
   },
   isPromoted: { type: Boolean, default: false },
-  promotionRank: { type: Number, default: null }, 
+  promotionRank: { type: Number, default: null },
   isEditorsChoice: { type: Boolean, default: false },
+  // Links this shop to its owner's Telegram account, set once via the
+  // shop-control bot's /claim flow (see config/shopControlBot.js). Sparse so
+  // many unclaimed shops can coexist without a unique-index collision on null.
+  ownerTelegramId: { type: Number, default: null },
+  ownerClaimCode: { type: String, default: null },
 }, {
-  timestamps: true, 
+  timestamps: true,
 });
 
 
 BusinessSchema.index({ location: '2dsphere' });
+BusinessSchema.index({ ownerTelegramId: 1 }, { unique: true, sparse: true });
 
 const ServicesModel = model('ServicesModel', BusinessSchema, 'Shops-data');
 

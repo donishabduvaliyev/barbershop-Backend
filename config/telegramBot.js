@@ -5,9 +5,9 @@ import User from '../models/userdata.js';
 import Booking from '../models/bookingHistory.js';
 import Review from '../models/review.js';
 import ServicesModel from '../models/shopData.js';
+import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
 const bot = new TelegramBot(token, { polling: false });
 let pollingStarted = false;
 
@@ -19,39 +19,10 @@ export const startBot = () => {
 };
 
 const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
-const pendingRejections = new Map();
-export const DIVIDER = '┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄';
-
-export const formatDateTime = (date) =>
-  new Date(date).toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-
-// Single source of truth for the admin-facing booking card, reused for the
-// initial post and every subsequent status edit so the layout never drifts.
-const formatBookingCard = (booking, statusLine) => {
-  const lines = [
-    '💈 *TEZKOR* · New Booking Request',
-    DIVIDER,
-    `🏪 *Shop:*  ${booking.shopName}`,
-    `👤 *Client:*  ${booking.userName}`,
-    `🔗 *Telegram:*  @${booking.userTelegramUsername || booking.userTelegramId}`,
-    `📞 *Phone:*  ${booking.userNumber}`,
-    `🗓 *Time:*  ${formatDateTime(booking.requestedTime)}`,
-  ];
-  if (booking.staffName) {
-    lines.push(`✂️ *Barber:*  ${booking.staffName}`);
-  }
-  if (statusLine) {
-    lines.push(DIVIDER, statusLine);
-  }
-  return lines.join('\n');
-};
 
 // start the bot
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
-    const telegramId = msg.from.id.toString();
 
     bot.sendMessage(
         chatId,
@@ -143,18 +114,6 @@ bot.on('contact', async (msg) => {
     }
 });
 
-// order management on bot
-export const sendBookingRequestToAdmin = async (booking) => {
-  const options = {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '✅ Confirm', callback_data: `confirm_${booking._id}` }, { text: '❌ Reject', callback_data: `reject_${booking._id}` }],
-      ],
-    },
-  };
-  await bot.sendMessage(adminChatId, formatBookingCard(booking), options);
-};
 // A booking's userTelegramId can belong to a chat the bot can no longer
 // message (user blocked the bot, deleted their account, or — historically,
 // before auth was enforced — was never a real chat at all). None of that
@@ -185,8 +144,8 @@ export const sendReminder = async (booking, whenLabel) => {
   await notifyUser(booking.userTelegramId, message);
 };
 
-// Called by jobs/reminders.js once a confirmed booking's time has passed —
-// kicks off the rating flow via inline star buttons.
+// Called by services/bookingActions.js once a confirmed booking's time has
+// passed — kicks off the rating flow via inline star buttons.
 export const sendRatingRequest = async (booking) => {
   const message = [
     '💈 *How was your visit?*',
@@ -198,11 +157,15 @@ export const sendRatingRequest = async (booking) => {
   });
 };
 
-// order acceptance
+// customer star-rating flow — the only callback/message handling left on
+// this bot. Confirm/reject/rejection-reason handling now lives entirely on
+// the shop-control bot (config/shopControlBot.js), since only shop owners
+// see those buttons.
 bot.on('callback_query', async (callbackQuery) => {
   try {
     const { data, message } = callbackQuery;
     const [action, bookingId, starsRaw] = data.split('_');
+    if (action !== 'rate' && action !== 'staffrate') return;
 
     const booking = await Booking.findById(bookingId);
     if (!booking) {
@@ -213,43 +176,7 @@ bot.on('callback_query', async (callbackQuery) => {
       });
     }
 
-    if (action === 'confirm') {
-      booking.status = 'confirmed';
-      await booking.save();
-
-      const userMessage = [
-        '✅ *Booking Confirmed*',
-        DIVIDER,
-        `Your appointment at *${booking.shopName}* is set for 🗓 ${formatDateTime(booking.requestedTime)}.`,
-        '',
-        'See you there! 💈',
-      ].join('\n');
-      await notifyUser(booking.userTelegramId, userMessage);
-
-      // Edit the admin's card in place — omitting reply_markup removes the buttons.
-      bot.editMessageText(formatBookingCard(booking, '🟢 *CONFIRMED*'), {
-        chat_id: message.chat.id,
-        message_id: message.message_id,
-        parse_mode: 'Markdown',
-      });
-      bot.answerCallbackQuery(callbackQuery.id, { text: 'Booking confirmed!' });
-
-    } else if (action === 'reject') {
-      bot.editMessageText(formatBookingCard(booking, '🟡 *Awaiting rejection reason…*'), {
-        chat_id: message.chat.id,
-        message_id: message.message_id,
-        parse_mode: 'Markdown',
-      });
-
-      // Store both the bookingId and the original message_id to edit later
-      pendingRejections.set(message.chat.id.toString(), { bookingId, originalMessageId: message.message_id });
-
-      await bot.sendMessage(message.chat.id, '✍️ Please reply with a reason for rejecting this booking.', {
-        reply_markup: { force_reply: true },
-      });
-      bot.answerCallbackQuery(callbackQuery.id);
-
-    } else if (action === 'rate') {
+    if (action === 'rate') {
       const stars = parseInt(starsRaw, 10);
 
       // A customer can only tap one of these buttons once — Telegram doesn't
@@ -312,49 +239,8 @@ bot.on('callback_query', async (callbackQuery) => {
       bot.answerCallbackQuery(callbackQuery.id, { text: 'Thanks!' });
     }
   } catch (err) {
-    console.error('Error handling booking callback:', err);
+    console.error('Error handling rating callback:', err);
     bot.answerCallbackQuery(callbackQuery.id, { text: 'Something went wrong.' }).catch(() => {});
-  }
-});
-// order rejection
-bot.on('message', async (msg) => {
-  try {
-    const chatId = msg.chat.id.toString();
-
-    if (msg.reply_to_message && pendingRejections.has(chatId)) {
-      const { bookingId, originalMessageId } = pendingRejections.get(chatId);
-      const reason = msg.text;
-
-      const booking = await Booking.findById(bookingId);
-      if (!booking) return;
-
-      booking.status = 'rejected';
-      booking.rejectionReason = reason;
-      await booking.save();
-
-      const userMessage = [
-        '❌ *Booking Update*',
-        DIVIDER,
-        `We couldn't confirm your booking at *${booking.shopName}* for 🗓 ${formatDateTime(booking.requestedTime)}.`,
-        '',
-        `*Reason:* ${reason}`,
-        '',
-        'Feel free to pick another time that works for you.',
-      ].join('\n');
-      await notifyUser(booking.userTelegramId, userMessage);
-
-      await bot.sendMessage(chatId, '✅ Rejection reason sent to the client.');
-      pendingRejections.delete(chatId);
-
-      // Edit the original admin card with the final rejection status.
-      bot.editMessageText(formatBookingCard(booking, `🔴 *REJECTED*\n*Reason:* ${reason}`), {
-          chat_id: chatId,
-          message_id: originalMessageId, // Use the saved message ID
-          parse_mode: 'Markdown',
-      });
-    }
-  } catch (err) {
-    console.error('Error handling rejection reason message:', err);
   }
 });
 
