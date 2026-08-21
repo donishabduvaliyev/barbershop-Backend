@@ -223,7 +223,7 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
     const userTelegramId = req.telegramUser.id;
     const userTelegramUsername = req.telegramUser.username || '';
 
-    if (!shopId || !requestedTime || !userNumber || !serviceId) {
+    if (!shopId || !requestedTime || !userNumber ) {
       return res.status(400).json({ message: 'Missing required information.' });
     }
 
@@ -241,27 +241,33 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
       }
     }
 
-    const service = shop?.services?.id(serviceId);
-    if (!service) {
-      return res.status(400).json({ message: 'Selected service is no longer available.' });
-    }
+   // serviceId is optional for now — clients running the old build don't send
+// one yet. When present it must be real; when absent we just skip
+// attaching service/price info instead of failing the whole booking.
+let resolvedService = null;
+if (serviceId) {
+  resolvedService = shop?.services?.id(serviceId);
+  if (!resolvedService) {
+    return res.status(400).json({ message: 'Selected service is no longer available.' });
+  }
+}
 
-    const newBookingRequest = new Booking({
-      shopId,
-      shopName,
-      userTelegramId,
-      userTelegramUsername,
-      requestedTime,
-      userNumber,
-      userTelegramNumber,
-      userName,
-      staffId: resolvedStaffId,
-      staffName: resolvedStaffName,
-      serviceId: service._id,
-      serviceName: service.name?.en || service.name?.ru || service.name?.uz || '',
-      price: service.price,
-      status: 'pending',
-    });
+const newBookingRequest = new Booking({
+  shopId,
+  shopName,
+  userTelegramId,
+  userTelegramUsername,
+  requestedTime,
+  userNumber,
+  userTelegramNumber,
+  userName,
+  staffId: resolvedStaffId,
+  staffName: resolvedStaffName,
+  serviceId: resolvedService?._id || null,
+  serviceName: resolvedService ? (resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '') : '',
+  price: resolvedService?.price ?? null,
+  status: 'pending',
+});
 
     await newBookingRequest.save();
 
