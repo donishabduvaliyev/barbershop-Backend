@@ -22,7 +22,7 @@ const StaffSchema = new Schema({
   reviewsCount: { type: Number, default: 0 },
 }, { timestamps: true });
 
-// Улучшенная схема для рабочих часов
+
 const WorkingHoursSchema = new Schema({
   days: [{
     type: String,
