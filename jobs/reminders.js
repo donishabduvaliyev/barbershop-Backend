@@ -1,9 +1,33 @@
 import Booking from '../models/bookingHistory.js';
+import JobLock from '../models/jobLock.js';
 import { sendReminder } from '../config/telegramBot.js';
 import { completeBooking } from '../services/bookingActions.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const COMPLETION_GRACE_MS = 30 * 60 * 1000; // treat as completed 30 min after the slot
+const LOCK_ID = 'reminderSweep';
+
+// Mongo-based mutual exclusion so this sweep is safe to run from more than
+// one server instance at once (auto-scaling, or a second local run without
+// DISABLE_TELEGRAM_POLLING) without sending every reminder/rating-request
+// twice. The upsert only succeeds if no lock exists yet or the previous one
+// has expired; a losing instance hits a duplicate-key error and just skips
+// this tick — no explicit unlock needed, it expires on its own.
+async function acquireLock(durationMs) {
+  const now = new Date();
+  try {
+    await JobLock.findOneAndUpdate(
+      { _id: LOCK_ID, lockedUntil: { $lt: now } },
+      { $set: { lockedUntil: new Date(now.getTime() + durationMs) } },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    if (err.code === 11000) return false; // another instance holds the lock
+    console.error('Reminder job lock acquisition failed:', err);
+    return false;
+  }
+}
 
 // Sends the 24h-before and 3h-before reminders, and rolls confirmed bookings
 // whose time has passed into 'completed' + kicks off the rating request.
@@ -11,6 +35,9 @@ const COMPLETION_GRACE_MS = 30 * 60 * 1000; // treat as completed 30 min after t
 // boolean flag) so a slow tick, a missed tick, or a server restart can never
 // double-send anything.
 async function runReminderSweep() {
+  const gotLock = await acquireLock(CHECK_INTERVAL_MS);
+  if (!gotLock) return;
+
   const now = new Date();
 
   try {

@@ -30,6 +30,11 @@ const BookingSchema = new Schema({
   // that same message in place when the status changes.
   notificationChatId: { type: Number, default: null },
   notificationMessageId: { type: Number, default: null },
+  // Set while the shop-control bot is waiting on the owner's free-text
+  // rejection reason (after they tap "Reject"). Persisted here rather than
+  // kept in an in-memory Map so a server restart mid-flow doesn't strand
+  // the booking on "Awaiting rejection reason…" forever.
+  awaitingRejectionReason: { type: Boolean, default: false },
   // Reminder/completion job bookkeeping — see jobs/reminders.js
   reminded24h: { type: Boolean, default: false },
   reminded3h: { type: Boolean, default: false },
@@ -37,6 +42,24 @@ const BookingSchema = new Schema({
 
   adminNotes: { type: String },
 }, { timestamps: true });
+
+// Hard, race-proof guarantee that a specific staff member can never hold two
+// active bookings for the same exact hour — enforced at the database level,
+// not just checked-then-inserted in application code, so two simultaneous
+// requests for the same barber/slot can't both slip through. Only applies
+// when a specific staffId is set; "any available" (staffId: null) bookings
+// are capacity-checked in the route instead, since more than one of those
+// can legitimately coexist when a shop has multiple staff.
+BookingSchema.index(
+  { shopId: 1, staffId: 1, requestedTime: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      staffId: { $type: 'objectId' },
+      status: { $in: ['pending', 'confirmed'] },
+    },
+  }
+);
 
 const Booking = model('Booking', BookingSchema, 'BookingData');
 

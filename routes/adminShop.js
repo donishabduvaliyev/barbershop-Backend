@@ -1,9 +1,24 @@
 import express from 'express';
 import ServicesModel from '../models/shopData.js';
+import Booking from '../models/bookingHistory.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
+
+const ACTIVE_STATUSES = ['pending', 'confirmed'];
+
+// How many upcoming active bookings reference this staff/service — used to
+// warn before a delete rather than silently orphaning appointments that
+// still need to happen.
+async function countUpcomingBookings(shopId, field, id) {
+  return Booking.countDocuments({
+    shopId,
+    [field]: id,
+    status: { $in: ACTIVE_STATUSES },
+    requestedTime: { $gte: new Date() },
+  });
+}
 
 // Every handler below trusts only req.shopId (from the verified JWT) to
 // decide which shop it's touching — never a client-supplied shop id.
@@ -108,6 +123,16 @@ router.delete('/services/:serviceId', async (req, res) => {
     const service = shop.services.id(req.params.serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found.' });
 
+    if (req.query.force !== 'true') {
+      const upcomingCount = await countUpcomingBookings(req.shopId, 'serviceId', service._id);
+      if (upcomingCount > 0) {
+        return res.status(409).json({
+          message: `This service has ${upcomingCount} upcoming appointment${upcomingCount === 1 ? '' : 's'}.`,
+          upcomingCount,
+        });
+      }
+    }
+
     service.deleteOne();
     await shop.save();
     res.status(200).json(shop.services);
@@ -164,6 +189,16 @@ router.delete('/staff/:staffId', async (req, res) => {
 
     const staffMember = shop.staff.id(req.params.staffId);
     if (!staffMember) return res.status(404).json({ message: 'Staff member not found.' });
+
+    if (req.query.force !== 'true') {
+      const upcomingCount = await countUpcomingBookings(req.shopId, 'staffId', staffMember._id);
+      if (upcomingCount > 0) {
+        return res.status(409).json({
+          message: `${staffMember.name} has ${upcomingCount} upcoming appointment${upcomingCount === 1 ? '' : 's'}.`,
+          upcomingCount,
+        });
+      }
+    }
 
     staffMember.deleteOne();
     await shop.save();

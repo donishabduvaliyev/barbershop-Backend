@@ -4,6 +4,7 @@ import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
+import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
 
 const router = express.Router();
 
@@ -213,6 +214,10 @@ router.post('/discovery-search', async (req, res) => {
   }
 });
 
+// A booking is "active" (occupies a slot) while pending or confirmed —
+// rejected/cancelled/completed ones never block anything.
+const ACTIVE_STATUSES = ['pending', 'confirmed'];
+
 router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
   try {
     const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId, serviceId } = req.body;
@@ -223,53 +228,103 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
     const userTelegramId = req.telegramUser.id;
     const userTelegramUsername = req.telegramUser.username || '';
 
-    if (!shopId || !requestedTime || !userNumber ) {
+    if (!shopId || !requestedTime || !userNumber) {
       return res.status(400).json({ message: 'Missing required information.' });
+    }
+
+    const shop = await ServicesModel.findById(shopId).select('staff services workingHours isOperational');
+    if (!shop) {
+      return res.status(404).json({ message: 'Shop not found.' });
+    }
+    if (!shop.isOperational) {
+      return res.status(409).json({ message: 'This shop is not currently accepting bookings.' });
+    }
+
+    const requestedTimeDate = new Date(requestedTime);
+    try {
+      assertBookableTime(shop, requestedTimeDate);
+    } catch (err) {
+      if (err instanceof BookingValidationError) {
+        return res.status(400).json({ message: err.message });
+      }
+      throw err;
     }
 
     // A staffId/serviceId is only ever honored if it actually belongs to
     // this shop — never trust client-supplied name/price alongside it.
-    const shop = await ServicesModel.findById(shopId).select('staff services');
-
     let resolvedStaffId = null;
     let resolvedStaffName = '';
     if (staffId) {
-      const staffMember = shop?.staff?.id(staffId);
+      const staffMember = shop.staff?.id(staffId);
       if (staffMember) {
         resolvedStaffId = staffMember._id;
         resolvedStaffName = staffMember.name;
       }
     }
 
-   // serviceId is optional for now — clients running the old build don't send
-// one yet. When present it must be real; when absent we just skip
-// attaching service/price info instead of failing the whole booking.
-let resolvedService = null;
-if (serviceId) {
-  resolvedService = shop?.services?.id(serviceId);
-  if (!resolvedService) {
-    return res.status(400).json({ message: 'Selected service is no longer available.' });
-  }
-}
+    // serviceId is optional for now — clients running an older build don't
+    // send one yet. When present it must be real; when absent we just skip
+    // attaching service/price info instead of failing the whole booking.
+    let resolvedService = null;
+    if (serviceId) {
+      resolvedService = shop.services?.id(serviceId);
+      if (!resolvedService) {
+        return res.status(400).json({ message: 'Selected service is no longer available.' });
+      }
+    }
 
-const newBookingRequest = new Booking({
-  shopId,
-  shopName,
-  userTelegramId,
-  userTelegramUsername,
-  requestedTime,
-  userNumber,
-  userTelegramNumber,
-  userName,
-  staffId: resolvedStaffId,
-  staffName: resolvedStaffName,
-  serviceId: resolvedService?._id || null,
-  serviceName: resolvedService ? (resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '') : '',
-  price: resolvedService?.price ?? null,
-  status: 'pending',
-});
+    // "Any available" (no specific staff requested) has no DB-level
+    // uniqueness constraint to lean on — a specific staff pick does (see the
+    // partial unique index on the model) — so check capacity ourselves: a
+    // staffless shop has one shared slot per hour; a staffed shop is full
+    // once every staff member already has an active booking that hour.
+    if (!resolvedStaffId) {
+      if (!shop.staff || shop.staff.length === 0) {
+        const taken = await Booking.exists({
+          shopId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES },
+        });
+        if (taken) {
+          return res.status(409).json({ message: 'This time slot was just taken — please pick another.' });
+        }
+      } else {
+        const bookedStaffIds = await Booking.distinct('staffId', {
+          shopId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES }, staffId: { $ne: null },
+        });
+        if (bookedStaffIds.length >= shop.staff.length) {
+          return res.status(409).json({ message: 'This time slot is fully booked — please pick another.' });
+        }
+      }
+    }
 
-    await newBookingRequest.save();
+    const newBookingRequest = new Booking({
+      shopId,
+      shopName,
+      userTelegramId,
+      userTelegramUsername,
+      requestedTime: requestedTimeDate,
+      userNumber,
+      userTelegramNumber,
+      userName,
+      staffId: resolvedStaffId,
+      staffName: resolvedStaffName,
+      serviceId: resolvedService?._id || null,
+      serviceName: resolvedService ? (resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '') : '',
+      price: resolvedService?.price ?? null,
+      status: 'pending',
+    });
+
+    try {
+      await newBookingRequest.save();
+    } catch (err) {
+      // Race-condition backstop: two requests for the same barber/slot can
+      // both pass the checks above in the same instant — the partial unique
+      // index on the model is what actually prevents the double-booking;
+      // this just turns that into a clean response instead of a 500.
+      if (err.code === 11000) {
+        return res.status(409).json({ message: 'That barber was just booked for this time — please pick another slot.' });
+      }
+      throw err;
+    }
 
     // The booking is already saved at this point — a failure to notify the
     // shop owner shouldn't make the client think their request wasn't received.
@@ -295,21 +350,36 @@ router.get('/service/:id/availability', async (req, res) => {
     if (!id) {
       return res.status(400).json({ message: 'Shop ID is required.' });
     }
-    const shop = await ServicesModel.findById(id).select('workingHours');
+    const shop = await ServicesModel.findById(id).select('workingHours staff');
     if (!shop) {
       return res.status(404).json({ message: 'Shop not found.' });
     }
-    const confirmedBookings = await Booking.find({
-      shopId: id,
-      status: 'confirmed',
-      requestedTime: { $gte: new Date() },
-    }).select('requestedTime');
 
-    const bookedSlots = confirmedBookings.map(b => b.requestedTime.toISOString());
+    // Pending bookings block a slot too now, not just confirmed ones —
+    // otherwise two customers can both see (and request) the same barber's
+    // slot while the shop owner hasn't responded to the first one yet.
+    // Capped to the next 60 days so this payload doesn't grow unbounded as
+    // a shop accumulates far-future bookings over time.
+    const horizon = new Date();
+    horizon.setDate(horizon.getDate() + 60);
+    const activeBookings = await Booking.find({
+      shopId: id,
+      status: { $in: ACTIVE_STATUSES },
+      requestedTime: { $gte: new Date(), $lte: horizon },
+    }).select('requestedTime staffId');
+
+    // staffId travels with each slot so the customer app can tell "this
+    // barber is taken" apart from "a different barber is taken" at the same
+    // hour, instead of blocking the whole shop for one barber's booking.
+    const bookedSlots = activeBookings.map((b) => ({
+      requestedTime: b.requestedTime.toISOString(),
+      staffId: b.staffId ? b.staffId.toString() : null,
+    }));
 
     res.status(200).json({
       workingHours: shop.workingHours,
-      bookedSlots: bookedSlots,
+      staffCount: shop.staff?.length || 0,
+      bookedSlots,
     });
 
   } catch (error) {

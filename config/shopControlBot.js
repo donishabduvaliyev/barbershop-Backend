@@ -11,6 +11,7 @@ import Booking from '../models/bookingHistory.js';
 import { registerCardEditor } from './notificationBridge.js';
 import { confirmBooking, rejectBooking } from '../services/bookingActions.js';
 import { DIVIDER, formatBookingCard } from '../utils/telegramFormat.js';
+import { notifyUser as notifyCustomerBotUser } from './telegramBot.js';
 
 const token = process.env.SHOP_CONTROL_BOT_TOKEN;
 const adminPanelUrl = process.env.ADMIN_PANEL_URL || 'http://localhost:5173';
@@ -35,11 +36,12 @@ const dashboardKeyboard = {
 shopControlBot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   try {
-    const shop = await ServicesModel.findOne({ ownerTelegramId: msg.from.id }).select('name');
-    if (shop) {
+    const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('name');
+    if (shops.length > 0) {
+      const names = shops.map((s) => `• ${s.name?.en || s.name?.ru || 'your shop'}`).join('\n');
       return shopControlBot.sendMessage(
         chatId,
-        `👋 *Welcome back*\n\nManaging *${shop.name?.en || shop.name?.ru || 'your shop'}*. Open your dashboard below:`,
+        `👋 *Welcome back*\n\nManaging:\n${names}\n\nOpen your dashboard below${shops.length > 1 ? ' and pick a shop' : ''}:`,
         { parse_mode: 'Markdown', reply_markup: dashboardKeyboard }
       );
     }
@@ -57,22 +59,20 @@ shopControlBot.onText(/\/claim (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const code = match[1].trim();
   try {
-    const alreadyLinked = await ServicesModel.findOne({ ownerTelegramId: msg.from.id });
-    if (alreadyLinked) {
-      return shopControlBot.sendMessage(chatId, `You're already managing *${alreadyLinked.name?.en || 'a shop'}*.`, {
-        parse_mode: 'Markdown',
-        reply_markup: dashboardKeyboard,
-      });
-    }
-
-    const shop = await ServicesModel.findOne({ ownerClaimCode: code });
+    // Atomic claim: the update's filter re-checks ownerClaimCode, and the
+    // update clears it in the same operation — so if two people race on the
+    // same code, only the first one to actually execute in Mongo wins; the
+    // second's filter no longer matches (code's already unset) and gets
+    // back null, same as an invalid code. A plain findOne-then-save here
+    // would have let both requests slip through.
+    const shop = await ServicesModel.findOneAndUpdate(
+      { ownerClaimCode: code },
+      { $set: { ownerTelegramId: msg.from.id }, $unset: { ownerClaimCode: '' } },
+      { new: true }
+    );
     if (!shop) {
       return shopControlBot.sendMessage(chatId, '❌ Invalid or already-used claim code.');
     }
-
-    shop.ownerTelegramId = msg.from.id;
-    shop.ownerClaimCode = null;
-    await shop.save();
 
     shopControlBot.sendMessage(
       chatId,
@@ -85,12 +85,62 @@ shopControlBot.onText(/\/claim (.+)/, async (msg, match) => {
   }
 });
 
+shopControlBot.onText(/^\/myshops$/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('name');
+    if (shops.length === 0) {
+      return shopControlBot.sendMessage(chatId, "You're not managing any shops yet. Send `/claim YOUR_CODE` to link one.", { parse_mode: 'Markdown' });
+    }
+    const lines = shops.map((s) => `• *${s.name?.en || s.name?.ru}*\n  \`/unclaim ${s._id}\` to remove yourself`);
+    shopControlBot.sendMessage(chatId, `🏪 *Your shops:*\n\n${lines.join('\n\n')}`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('shopControlBot /myshops error:', err);
+  }
+});
+
+shopControlBot.onText(/\/unclaim (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const shopId = match[1].trim();
+  try {
+    // Scoped to ownerTelegramId in the filter itself, so this can only ever
+    // remove *your own* ownership, never someone else's shop.
+    const shop = await ServicesModel.findOneAndUpdate(
+      { _id: shopId, ownerTelegramId: msg.from.id },
+      { $set: { ownerTelegramId: null } },
+      { new: false }
+    );
+    if (!shop) {
+      return shopControlBot.sendMessage(chatId, "❌ That doesn't look like one of your shops.");
+    }
+    shopControlBot.sendMessage(
+      chatId,
+      `✅ You're no longer managing *${shop.name?.en || shop.name?.ru}*. A new claim code is needed for anyone (including you) to link it again.`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('shopControlBot /unclaim error:', err);
+    shopControlBot.sendMessage(chatId, '❌ Something went wrong. Please try again.');
+  }
+});
+
 // New-booking notifications now route to the specific shop's owner instead
 // of one global admin chat, so each shop only ever sees its own requests.
 export const notifyShopOwnerOfNewBooking = async (booking) => {
-  const shop = await ServicesModel.findById(booking.shopId).select('ownerTelegramId');
+  const shop = await ServicesModel.findById(booking.shopId).select('ownerTelegramId name');
   if (!shop?.ownerTelegramId) {
+    // Nobody would otherwise ever find out this booking exists — fall back
+    // to alerting the platform operator (still reachable via the customer
+    // bot, since that's the one they originally interacted with) so an
+    // unclaimed shop's bookings don't just silently pile up unseen.
     console.warn(`Shop ${booking.shopId} has no linked owner — booking ${booking._id} was not posted to Telegram.`);
+    const operatorChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+    if (operatorChatId) {
+      await notifyCustomerBotUser(
+        operatorChatId,
+        `⚠️ *Unclaimed shop got a booking*\n${DIVIDER}\n*Shop:* ${shop?.name?.en || booking.shopName}\n*Client:* ${booking.userName}\nThis shop's owner hasn't linked their Telegram account yet — run \`generateClaimCode.js\` and send them a claim code.`
+      );
+    }
     return;
   }
 
@@ -122,8 +172,6 @@ registerCardEditor(async (booking, statusLine) => {
   });
 });
 
-const pendingRejections = new Map();
-
 shopControlBot.on('callback_query', async (callbackQuery) => {
   try {
     const { data, message } = callbackQuery;
@@ -148,7 +196,11 @@ shopControlBot.on('callback_query', async (callbackQuery) => {
         message_id: message.message_id,
         parse_mode: 'Markdown',
       });
-      pendingRejections.set(message.chat.id.toString(), bookingId);
+      // Persisted on the booking itself (not an in-memory Map) so a server
+      // restart between "tapped Reject" and "typed a reason" doesn't strand
+      // this booking awaiting a reply that can never arrive.
+      booking.awaitingRejectionReason = true;
+      await booking.save();
       await shopControlBot.sendMessage(message.chat.id, '✍️ Please reply with a reason for rejecting this booking.', {
         reply_markup: { force_reply: true },
       });
@@ -162,13 +214,18 @@ shopControlBot.on('callback_query', async (callbackQuery) => {
 
 shopControlBot.on('message', async (msg) => {
   try {
-    const chatId = msg.chat.id.toString();
-    if (!msg.reply_to_message || !pendingRejections.has(chatId)) return;
+    if (!msg.reply_to_message) return;
 
-    const bookingId = pendingRejections.get(chatId);
-    pendingRejections.delete(chatId);
-    await rejectBooking(bookingId, msg.text);
-    await shopControlBot.sendMessage(chatId, '✅ Rejection reason sent to the client.');
+    const booking = await Booking.findOne({
+      notificationChatId: msg.chat.id,
+      awaitingRejectionReason: true,
+    }).sort({ updatedAt: -1 });
+    if (!booking) return;
+
+    booking.awaitingRejectionReason = false;
+    await booking.save();
+    await rejectBooking(booking._id, msg.text);
+    await shopControlBot.sendMessage(msg.chat.id, '✅ Rejection reason sent to the client.');
   } catch (err) {
     console.error('Error handling shop-control rejection reason message:', err);
   }

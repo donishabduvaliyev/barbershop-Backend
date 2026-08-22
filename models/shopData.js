@@ -75,8 +75,9 @@ const BusinessSchema = new Schema({
   promotionRank: { type: Number, default: null },
   isEditorsChoice: { type: Boolean, default: false },
   // Links this shop to its owner's Telegram account, set once via the
-  // shop-control bot's /claim flow (see config/shopControlBot.js). Sparse so
-  // many unclaimed shops can coexist without a unique-index collision on null.
+  // shop-control bot's /claim flow (see config/shopControlBot.js). One
+  // Telegram account may own several shops (no uniqueness constraint here) —
+  // routes/adminAuth.js handles picking which one to manage on login.
   ownerTelegramId: { type: Number, default: null },
   ownerClaimCode: { type: String, default: null },
 }, {
@@ -85,7 +86,7 @@ const BusinessSchema = new Schema({
 
 
 BusinessSchema.index({ location: '2dsphere' });
-BusinessSchema.index({ ownerTelegramId: 1 }, { unique: true, sparse: true });
+BusinessSchema.index({ ownerTelegramId: 1 });
 
 const ServicesModel = model('ServicesModel', BusinessSchema, 'Shops-data');
 
