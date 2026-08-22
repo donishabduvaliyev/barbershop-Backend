@@ -20,6 +20,11 @@ const BookingSchema = new Schema({
   },
   staffId: { type: Schema.Types.ObjectId, default: null },
   staffName: { type: String, default: '' },
+  // Only set for "any available" bookings (staffId: null) — an atomically
+  // claimed number in [0, shop.capacity) that makes those bookings
+  // race-proof the same way the staffId index does for specific-staff ones.
+  // See routes/shops.js's claimVirtualSlot.
+  virtualSlot: { type: Number, default: null },
   // Snapshotted at booking time (not a live reference) so editing/deleting a
   // service later never rewrites historical revenue or "most used" stats.
   serviceId: { type: Schema.Types.ObjectId, default: null },
@@ -46,16 +51,27 @@ const BookingSchema = new Schema({
 // Hard, race-proof guarantee that a specific staff member can never hold two
 // active bookings for the same exact hour — enforced at the database level,
 // not just checked-then-inserted in application code, so two simultaneous
-// requests for the same barber/slot can't both slip through. Only applies
-// when a specific staffId is set; "any available" (staffId: null) bookings
-// are capacity-checked in the route instead, since more than one of those
-// can legitimately coexist when a shop has multiple staff.
+// requests for the same barber/slot can't both slip through.
 BookingSchema.index(
   { shopId: 1, staffId: 1, requestedTime: 1 },
   {
     unique: true,
     partialFilterExpression: {
       staffId: { $type: 'objectId' },
+      status: { $in: ['pending', 'confirmed'] },
+    },
+  }
+);
+
+// Same guarantee for "any available" bookings — each one atomically claims
+// a virtualSlot number, and this index makes double-claiming the same
+// number for the same shop/hour impossible, however many requests race.
+BookingSchema.index(
+  { shopId: 1, requestedTime: 1, virtualSlot: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      virtualSlot: { $type: 'number' },
       status: { $in: ['pending', 'confirmed'] },
     },
   }

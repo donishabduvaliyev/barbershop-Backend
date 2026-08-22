@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
@@ -7,6 +8,21 @@ import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
 
 const router = express.Router();
+
+// A flood of requests (a retry-loop bug, or someone mashing the button) can
+// spam a shop owner with duplicate Telegram notifications and risks hitting
+// Telegram's own per-chat rate limit — so this is capped per Telegram
+// account, not per IP (many customers can share one IP through Telegram's
+// own infra, and IP is meaningless behind an ngrok tunnel anyway). Runs
+// after requireTelegramAuth so req.telegramUser is already verified.
+const bookingRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.telegramUser?.id?.toString() || ipKeyGenerator(req.ip),
+  message: { message: "You're sending requests too quickly — please wait a few minutes and try again." },
+});
 
 
 
@@ -218,9 +234,30 @@ router.post('/discovery-search', async (req, res) => {
 // rejected/cancelled/completed ones never block anything.
 const ACTIVE_STATUSES = ['pending', 'confirmed'];
 
-router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
+// Atomically claims one "any available" slot for a staffless (or
+// no-staff-requested) booking, the same way the staffId unique index does
+// for a specific barber. Tries virtualSlot 0, 1, 2… up to capacity - 1,
+// relying on the partial unique index on {shopId, requestedTime,
+// virtualSlot} to reject a slot number another concurrent request just
+// took — so two requests racing for the last opening can't both succeed,
+// unlike a plain "count bookings, then insert" check.
+async function claimVirtualSlot(bookingDoc, capacity) {
+  for (let slot = 0; slot < capacity; slot++) {
+    bookingDoc.virtualSlot = slot;
+    try {
+      await bookingDoc.save();
+      return true;
+    } catch (err) {
+      if (err.code !== 11000) throw err;
+      bookingDoc.isNew = true; // retry the same in-memory doc with the next slot
+    }
+  }
+  return false;
+}
+
+router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async (req, res) => {
   try {
-    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId, serviceId } = req.body;
+    const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId, serviceId, lang } = req.body;
 
     // Trust the Telegram identity verified by requireTelegramAuth, never the
     // client-supplied userTelegramId/username — otherwise anyone could book
@@ -232,7 +269,7 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
       return res.status(400).json({ message: 'Missing required information.' });
     }
 
-    const shop = await ServicesModel.findById(shopId).select('staff services workingHours isOperational');
+    const shop = await ServicesModel.findById(shopId).select('staff services workingHours isOperational capacity');
     if (!shop) {
       return res.status(404).json({ message: 'Shop not found.' });
     }
@@ -248,6 +285,18 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
         return res.status(400).json({ message: err.message });
       }
       throw err;
+    }
+
+    // A customer can't be in two places at once — this catches the honest
+    // "forgot I already booked" case (and the Rebook shortcut making it
+    // easy to do by accident). App-level check is fine here since it's a
+    // courtesy guard against the customer's own past bookings, not a
+    // shared-resource integrity constraint like the barber/slot ones below.
+    const selfConflict = await Booking.exists({
+      userTelegramId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES },
+    });
+    if (selfConflict) {
+      return res.status(409).json({ message: 'You already have another appointment booked at this time.' });
     }
 
     // A staffId/serviceId is only ever honored if it actually belongs to
@@ -272,31 +321,14 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
         return res.status(400).json({ message: 'Selected service is no longer available.' });
       }
     }
+    // Snapshot the name in whichever language the customer was actually
+    // using, instead of always defaulting to English regardless of locale —
+    // falls back to English only if that language variant is missing.
+    const serviceName = resolvedService
+      ? (resolvedService.name?.[lang] || resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '')
+      : '';
 
-    // "Any available" (no specific staff requested) has no DB-level
-    // uniqueness constraint to lean on — a specific staff pick does (see the
-    // partial unique index on the model) — so check capacity ourselves: a
-    // staffless shop has one shared slot per hour; a staffed shop is full
-    // once every staff member already has an active booking that hour.
-    if (!resolvedStaffId) {
-      if (!shop.staff || shop.staff.length === 0) {
-        const taken = await Booking.exists({
-          shopId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES },
-        });
-        if (taken) {
-          return res.status(409).json({ message: 'This time slot was just taken — please pick another.' });
-        }
-      } else {
-        const bookedStaffIds = await Booking.distinct('staffId', {
-          shopId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES }, staffId: { $ne: null },
-        });
-        if (bookedStaffIds.length >= shop.staff.length) {
-          return res.status(409).json({ message: 'This time slot is fully booked — please pick another.' });
-        }
-      }
-    }
-
-    const newBookingRequest = new Booking({
+    const baseFields = {
       shopId,
       shopName,
       userTelegramId,
@@ -305,25 +337,40 @@ router.post('/booking-requests', requireTelegramAuth, async (req, res) => {
       userNumber,
       userTelegramNumber,
       userName,
-      staffId: resolvedStaffId,
-      staffName: resolvedStaffName,
       serviceId: resolvedService?._id || null,
-      serviceName: resolvedService ? (resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '') : '',
+      serviceName,
       price: resolvedService?.price ?? null,
       status: 'pending',
-    });
+    };
 
-    try {
-      await newBookingRequest.save();
-    } catch (err) {
-      // Race-condition backstop: two requests for the same barber/slot can
-      // both pass the checks above in the same instant — the partial unique
-      // index on the model is what actually prevents the double-booking;
-      // this just turns that into a clean response instead of a 500.
-      if (err.code === 11000) {
-        return res.status(409).json({ message: 'That barber was just booked for this time — please pick another slot.' });
+    let newBookingRequest;
+
+    if (resolvedStaffId) {
+      // A specific barber was requested — the partial unique index on
+      // {shopId, staffId, requestedTime} is what actually prevents two
+      // people booking the same barber/slot at once; this save() either
+      // succeeds outright or fails with a duplicate-key error we turn into
+      // a clean response below.
+      newBookingRequest = new Booking({ ...baseFields, staffId: resolvedStaffId, staffName: resolvedStaffName });
+      try {
+        await newBookingRequest.save();
+      } catch (err) {
+        if (err.code === 11000) {
+          return res.status(409).json({ message: 'That barber was just booked for this time — please pick another slot.' });
+        }
+        throw err;
       }
-      throw err;
+    } else {
+      // "Any available" — capacity is however many staff are named, or the
+      // shop's plain capacity number for shops that don't track individual
+      // staff. claimVirtualSlot races safely against concurrent requests
+      // for the same shop/hour via its own unique index.
+      const capacity = shop.staff?.length > 0 ? shop.staff.length : (shop.capacity || 1);
+      newBookingRequest = new Booking({ ...baseFields, staffId: null, staffName: '' });
+      const claimed = await claimVirtualSlot(newBookingRequest, capacity);
+      if (!claimed) {
+        return res.status(409).json({ message: 'This time slot is fully booked — please pick another.' });
+      }
     }
 
     // The booking is already saved at this point — a failure to notify the
@@ -350,7 +397,7 @@ router.get('/service/:id/availability', async (req, res) => {
     if (!id) {
       return res.status(400).json({ message: 'Shop ID is required.' });
     }
-    const shop = await ServicesModel.findById(id).select('workingHours staff');
+    const shop = await ServicesModel.findById(id).select('workingHours staff capacity');
     if (!shop) {
       return res.status(404).json({ message: 'Shop not found.' });
     }
@@ -379,6 +426,9 @@ router.get('/service/:id/availability', async (req, res) => {
     res.status(200).json({
       workingHours: shop.workingHours,
       staffCount: shop.staff?.length || 0,
+      // Only meaningful when staffCount is 0 — "how many clients can this
+      // staffless shop serve at the same hour" (see models/shopData.js).
+      capacity: shop.capacity || 1,
       bookedSlots,
     });
 

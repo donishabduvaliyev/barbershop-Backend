@@ -66,6 +66,11 @@ const BusinessSchema = new Schema({
   // Empty by default — the "Meet the Team" section only renders once a shop
   // actually has staff entries, and booking only offers a staff picker then too.
   staff: { type: [StaffSchema], default: [] },
+  // How many clients this shop can serve at the same hour — only consulted
+  // when the shop hasn't named individual staff (some shops track named
+  // barbers, others just track "we have N chairs"). Defaults to 1 so a
+  // staffless shop with no capacity set behaves exactly as before.
+  capacity: { type: Number, default: 1, min: 1 },
   priceTier: {
     type: Number,
     min: 1,
