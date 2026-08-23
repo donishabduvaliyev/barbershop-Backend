@@ -12,11 +12,29 @@ const bot = new TelegramBot(token, { polling: false });
 let pollingStarted = false;
 
 export const startBot = () => {
-  if (!pollingStarted) {
-    pollingStarted = true;
-    bot.startPolling();
+  if (pollingStarted) return;
+  if (!token) {
+    console.warn('⚠️ TELEGRAM_BOT_TOKEN not set — customer bot disabled.');
+    return;
   }
+  pollingStarted = true;
+  // startPolling() resolves once Telegram has actually accepted the
+  // long-poll connection — logging here (not just calling it) is the only
+  // way to tell from a host's log window whether the bot is truly live, as
+  // opposed to having silently failed to start (bad token, network issue).
+  bot.startPolling()
+    .then(() => console.log('✅ Customer bot polling started.'))
+    .catch((err) => console.error('❌ Customer bot failed to start polling:', err.message));
 };
+
+// Without an explicit listener, a 409 (another instance already polling
+// this same token — see DISABLE_TELEGRAM_POLLING in server.js) or any other
+// polling failure happens silently on some hosts instead of showing up in
+// the log window, which looks identical to "nothing is happening" from the
+// customer's side.
+bot.on('polling_error', (err) => {
+  console.error('❌ Customer bot polling error:', err.message);
+});
 
 const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 

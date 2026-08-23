@@ -18,6 +18,7 @@ export async function confirmBooking(bookingId) {
 
   booking.status = 'confirmed';
   await booking.save();
+  console.log(`✅ Booking ${booking._id} confirmed — ${booking.shopName}, ${booking.userName} @ ${booking.requestedTime.toISOString()}`);
 
   const userMessage = [
     '✅ *Booking Confirmed*',
@@ -41,6 +42,7 @@ export async function rejectBooking(bookingId, reason) {
   booking.status = 'rejected';
   booking.rejectionReason = reason;
   await booking.save();
+  console.log(`❌ Booking ${booking._id} rejected — ${booking.shopName}, ${booking.userName} @ ${booking.requestedTime.toISOString()} (reason: ${reason})`);
 
   const userMessage = [
     '❌ *Booking Update*',
@@ -68,6 +70,7 @@ export async function completeBooking(bookingId) {
 
   booking.status = 'completed';
   await booking.save();
+  console.log(`🏁 Booking ${booking._id} marked completed — ${booking.shopName}, ${booking.userName}`);
   await editBookingCard(booking, '✅ *COMPLETED*');
   emitToShop(booking.shopId, 'appointment:update', booking);
 

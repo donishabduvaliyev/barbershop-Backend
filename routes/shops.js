@@ -296,6 +296,7 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       userTelegramId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES },
     });
     if (selfConflict) {
+      console.log(`⏭️ Booking blocked (self-conflict) — user ${userTelegramId} @ ${requestedTimeDate.toISOString()}`);
       return res.status(409).json({ message: 'You already have another appointment booked at this time.' });
     }
 
@@ -369,9 +370,12 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       newBookingRequest = new Booking({ ...baseFields, staffId: null, staffName: '' });
       const claimed = await claimVirtualSlot(newBookingRequest, capacity);
       if (!claimed) {
+        console.log(`⏭️ Booking blocked (fully booked) — shop ${shopId} @ ${requestedTimeDate.toISOString()}`);
         return res.status(409).json({ message: 'This time slot is fully booked — please pick another.' });
       }
     }
+
+    console.log(`📥 New booking ${newBookingRequest._id} — ${shopName}, ${userName} @ ${requestedTimeDate.toISOString()}${resolvedStaffName ? ` with ${resolvedStaffName}` : ''}${serviceName ? ` (${serviceName})` : ''}`);
 
     // The booking is already saved at this point — a failure to notify the
     // shop owner shouldn't make the client think their request wasn't received.

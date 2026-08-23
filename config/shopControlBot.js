@@ -20,15 +20,23 @@ const shopControlBot = new TelegramBot(token, { polling: false });
 let pollingStarted = false;
 
 export const startShopControlBot = () => {
+  if (pollingStarted) return;
   if (!token) {
     console.warn('⚠️ SHOP_CONTROL_BOT_TOKEN not set — shop-control bot disabled.');
     return;
   }
-  if (!pollingStarted) {
-    pollingStarted = true;
-    shopControlBot.startPolling();
-  }
+  pollingStarted = true;
+  // See config/telegramBot.js's startBot for why this is logged explicitly
+  // rather than just called — a host's log window otherwise can't tell
+  // "actually polling" apart from "silently failed to start".
+  shopControlBot.startPolling()
+    .then(() => console.log('✅ Shop-control bot polling started.'))
+    .catch((err) => console.error('❌ Shop-control bot failed to start polling:', err.message));
 };
+
+shopControlBot.on('polling_error', (err) => {
+  console.error('❌ Shop-control bot polling error:', err.message);
+});
 
 const dashboardKeyboard = {
   inline_keyboard: [[{ text: '🔐 Open Dashboard', web_app: { url: adminPanelUrl } }]],
@@ -90,8 +98,10 @@ shopControlBot.onText(/\/claim (.+)/, async (msg, match) => {
       { new: true }
     );
     if (!shop) {
+      console.log(`⏭️ Claim attempt failed (invalid/used code) — Telegram user ${msg.from.id}`);
       return shopControlBot.sendMessage(chatId, '❌ Invalid or already-used claim code.');
     }
+    console.log(`🔗 Shop "${shop.name?.en}" claimed by Telegram user ${msg.from.id}`);
 
     shopControlBot.sendMessage(
       chatId,
@@ -132,6 +142,7 @@ shopControlBot.onText(/\/unclaim (.+)/, async (msg, match) => {
     if (!shop) {
       return shopControlBot.sendMessage(chatId, "❌ That doesn't look like one of your shops.");
     }
+    console.log(`🔓 Shop "${shop.name?.en}" unclaimed by Telegram user ${msg.from.id}`);
     shopControlBot.sendMessage(
       chatId,
       `✅ You're no longer managing *${shop.name?.en || shop.name?.ru}*. A new claim code is needed for anyone (including you) to link it again.`,
@@ -186,6 +197,7 @@ shopControlBot.onText(/\/gencode (.+)/, async (msg, match) => {
     const code = crypto.randomBytes(4).toString('hex').toUpperCase();
     shop.ownerClaimCode = code;
     await shop.save();
+    console.log(`🔑 Claim code generated for "${shop.name?.en}" by operator`);
 
     shopControlBot.sendMessage(
       chatId,
@@ -218,6 +230,7 @@ shopControlBot.onText(/\/resetowner (.+)/, async (msg, match) => {
     shop.ownerTelegramId = null;
     shop.ownerClaimCode = code;
     await shop.save();
+    console.log(`♻️ Ownership reset for "${shop.name?.en}" by operator${previousOwner ? ` (was Telegram user ${previousOwner})` : ''}`);
 
     shopControlBot.sendMessage(
       chatId,

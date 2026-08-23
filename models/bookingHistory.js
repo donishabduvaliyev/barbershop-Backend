@@ -6,6 +6,7 @@ const BookingSchema = new Schema({
   shopName: { type: String, required: true },
   userTelegramId: { type: Number, required: true, index: true },
   userTelegramUsername: { type: String },
+  userName: { type: String, default: '' },
   userNumber: { type: String, required: true },
   userTelegramNumber: { type: String }, 
   requestedTime: { type: Date, required: true },
