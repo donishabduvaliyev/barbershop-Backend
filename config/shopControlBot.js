@@ -143,6 +143,93 @@ shopControlBot.onText(/\/unclaim (.+)/, async (msg, match) => {
   }
 });
 
+// --- Operator-only shop-onboarding commands (see isOperator above) ---
+
+shopControlBot.onText(/^\/unclaimed$/, async (msg) => {
+  if (!isOperator(msg)) return;
+  const chatId = msg.chat.id;
+  try {
+    const shops = await ServicesModel.find({ ownerTelegramId: null }).select('name');
+    if (shops.length === 0) {
+      return shopControlBot.sendMessage(chatId, '✅ Every shop currently has an owner linked.');
+    }
+    const lines = shops.map((s) => `• ${s.name?.en || s.name?.ru}`).join('\n');
+    shopControlBot.sendMessage(chatId, `📋 *Unclaimed shops:*\n${lines}\n\nUse \`/gencode <name>\` to generate a claim code for one.`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('shopControlBot /unclaimed error:', err);
+  }
+});
+
+shopControlBot.onText(/\/gencode (.+)/, async (msg, match) => {
+  if (!isOperator(msg)) return;
+  const chatId = msg.chat.id;
+  const query = match[1].trim();
+  try {
+    const shops = await findShopsByQuery(query);
+    if (shops.length === 0) {
+      return shopControlBot.sendMessage(chatId, `❌ No shop matches "${query}".`);
+    }
+    if (shops.length > 1) {
+      const lines = shops.map((s) => `• ${s.name?.en} — \`/gencode ${s._id}\``).join('\n');
+      return shopControlBot.sendMessage(chatId, `Multiple shops match "${query}" — pick one:\n${lines}`, { parse_mode: 'Markdown' });
+    }
+
+    const shop = shops[0];
+    if (shop.ownerTelegramId) {
+      return shopControlBot.sendMessage(
+        chatId,
+        `⚠️ *${shop.name?.en}* is already claimed (Telegram user \`${shop.ownerTelegramId}\`).\nUse \`/resetowner ${shop._id}\` if you want to force a new owner.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+    shop.ownerClaimCode = code;
+    await shop.save();
+
+    shopControlBot.sendMessage(
+      chatId,
+      `✅ Claim code for *${shop.name?.en}*: \`${code}\`\n\nSend the owner this message:\n\n_Open @${(await shopControlBot.getMe()).username} on Telegram and send:_\n\`/claim ${code}\``,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('shopControlBot /gencode error:', err);
+    shopControlBot.sendMessage(chatId, '❌ Something went wrong generating the code.');
+  }
+});
+
+shopControlBot.onText(/\/resetowner (.+)/, async (msg, match) => {
+  if (!isOperator(msg)) return;
+  const chatId = msg.chat.id;
+  const query = match[1].trim();
+  try {
+    const shops = await findShopsByQuery(query);
+    if (shops.length === 0) {
+      return shopControlBot.sendMessage(chatId, `❌ No shop matches "${query}".`);
+    }
+    if (shops.length > 1) {
+      const lines = shops.map((s) => `• ${s.name?.en} — \`/resetowner ${s._id}\``).join('\n');
+      return shopControlBot.sendMessage(chatId, `Multiple shops match "${query}" — pick one:\n${lines}`, { parse_mode: 'Markdown' });
+    }
+
+    const shop = shops[0];
+    const previousOwner = shop.ownerTelegramId;
+    const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+    shop.ownerTelegramId = null;
+    shop.ownerClaimCode = code;
+    await shop.save();
+
+    shopControlBot.sendMessage(
+      chatId,
+      `✅ *${shop.name?.en}* ownership reset${previousOwner ? ` (was \`${previousOwner}\`)` : ''}.\nNew claim code: \`${code}\`\n\`/claim ${code}\``,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('shopControlBot /resetowner error:', err);
+    shopControlBot.sendMessage(chatId, '❌ Something went wrong resetting ownership.');
+  }
+});
+
 // New-booking notifications now route to the specific shop's owner instead
 // of one global admin chat, so each shop only ever sees its own requests.
 export const notifyShopOwnerOfNewBooking = async (booking) => {
