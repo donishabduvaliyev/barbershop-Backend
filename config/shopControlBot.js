@@ -5,6 +5,7 @@
 // the booking bot never mixes with an owner's shop-control chat.
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 dotenv.config();
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
@@ -32,6 +33,24 @@ export const startShopControlBot = () => {
 const dashboardKeyboard = {
   inline_keyboard: [[{ text: '🔐 Open Dashboard', web_app: { url: adminPanelUrl } }]],
 };
+
+// Platform-operator-only commands (/gencode, /unclaimed, /resetowner) below
+// are gated to this one chat — the same chat that already receives
+// unclaimed-shop alerts (see notifyShopOwnerOfNewBooking). Anyone else
+// sending these commands is silently ignored, same as if the command didn't
+// exist, rather than revealing that an operator-only command exists at all.
+const isOperator = (msg) => String(msg.from.id) === String(process.env.TELEGRAM_ADMIN_CHAT_ID);
+
+// Shared by /gencode and /resetowner — finds shop(s) by _id or a
+// case-insensitive name match, so the operator never has to open Mongo or
+// run a script by hand to look one up.
+async function findShopsByQuery(query) {
+  if (/^[0-9a-fA-F]{24}$/.test(query)) {
+    const shop = await ServicesModel.findById(query);
+    return shop ? [shop] : [];
+  }
+  return ServicesModel.find({ 'name.en': { $regex: query, $options: 'i' } });
+}
 
 shopControlBot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
