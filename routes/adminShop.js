@@ -1,12 +1,29 @@
 import express from 'express';
+import multer from 'multer';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
+import { uploadImage, deleteImageByUrl } from '../config/r2.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
 
 const ACTIVE_STATUSES = ['pending', 'confirmed'];
+
+// Files land in memory (not disk) — they're immediately resized/re-encoded
+// and streamed to R2, so there's never a reason to touch the filesystem.
+// 8MB comfortably covers an unedited phone photo; fileFilter rejects
+// anything that isn't actually an image before it's ever processed.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed.'));
+    }
+    cb(null, true);
+  },
+});
 
 // How many upcoming active bookings reference this staff/service — used to
 // warn before a delete rather than silently orphaning appointments that
@@ -71,6 +88,91 @@ router.patch('/working-hours', async (req, res) => {
   } catch (error) {
     console.error('Error updating working hours:', error);
     res.status(500).json({ message: 'Server error updating working hours.' });
+  }
+});
+
+// ---- Photos ----
+// Only the resulting R2 URL is ever stored on the document — the image
+// bytes themselves never touch MongoDB.
+
+router.post('/photo', upload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No photo uploaded.' });
+
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const { url } = await uploadImage(req.file.buffer, { folder: `shops/${req.shopId}`, maxWidth: 1200 });
+    const previousUrl = shop.image;
+    shop.image = url;
+    await shop.save();
+    deleteImageByUrl(previousUrl).catch(() => {}); // best-effort, never blocks the response
+
+    res.status(200).json({ image: shop.image });
+  } catch (error) {
+    console.error('Error uploading shop photo:', error);
+    res.status(500).json({ message: error.message?.includes('image') ? error.message : 'Server error uploading photo.' });
+  }
+});
+
+router.post('/photos', upload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No photo uploaded.' });
+
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const { url } = await uploadImage(req.file.buffer, { folder: `shops/${req.shopId}`, maxWidth: 1200 });
+    shop.images.push(url);
+    await shop.save();
+
+    res.status(201).json({ images: shop.images });
+  } catch (error) {
+    console.error('Error uploading gallery photo:', error);
+    res.status(500).json({ message: error.message?.includes('image') ? error.message : 'Server error uploading photo.' });
+  }
+});
+
+router.delete('/photos', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ message: 'url is required.' });
+
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    shop.images = shop.images.filter((img) => img !== url);
+    await shop.save();
+    deleteImageByUrl(url).catch(() => {});
+
+    res.status(200).json({ images: shop.images });
+  } catch (error) {
+    console.error('Error deleting gallery photo:', error);
+    res.status(500).json({ message: 'Server error deleting photo.' });
+  }
+});
+
+router.post('/staff/:staffId/photo', upload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No photo uploaded.' });
+
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const staffMember = shop.staff.id(req.params.staffId);
+    if (!staffMember) return res.status(404).json({ message: 'Staff member not found.' });
+
+    // Smaller than shop photos — these only ever render as small avatars.
+    const { url } = await uploadImage(req.file.buffer, { folder: `staff/${req.shopId}`, maxWidth: 500 });
+    const previousUrl = staffMember.photo;
+    staffMember.photo = url;
+    await shop.save();
+    deleteImageByUrl(previousUrl).catch(() => {});
+
+    res.status(200).json({ photo: staffMember.photo });
+  } catch (error) {
+    console.error('Error uploading staff photo:', error);
+    res.status(500).json({ message: error.message?.includes('image') ? error.message : 'Server error uploading photo.' });
   }
 });
 
