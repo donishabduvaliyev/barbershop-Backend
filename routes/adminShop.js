@@ -55,7 +55,7 @@ router.get('/', async (req, res) => {
 
 const EDITABLE_SHOP_FIELDS = [
   'name', 'description', 'phone', 'address', 'location', 'image', 'images',
-  'isOperational', 'priceTier', 'capacity',
+  'isOperational', 'priceTier', 'capacity', 'winBackEnabled',
 ];
 
 router.patch('/', async (req, res) => {

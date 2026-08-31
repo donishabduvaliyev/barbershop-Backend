@@ -82,3 +82,23 @@ export async function completeBooking(bookingId) {
 
   return booking;
 }
+
+// The reminder sweep auto-completes a confirmed booking as soon as its time
+// passes, with no way to know whether the customer actually came — this is
+// the owner correcting that after the fact from the Appointments page, so
+// it's allowed from either 'confirmed' (caught before the sweep ran) or
+// 'completed' (caught after). No customer notification — they already know
+// they didn't show up.
+export async function markNoShow(bookingId) {
+  const booking = await Booking.findById(bookingId);
+  if (!booking) return null;
+  if (!['confirmed', 'completed'].includes(booking.status)) return booking;
+
+  booking.status = 'no-show';
+  await booking.save();
+  console.log(`🚫 Booking ${booking._id} marked no-show — ${booking.shopName}, ${booking.userName}`);
+  await editBookingCard(booking, '🚫 *NO-SHOW*');
+  emitToShop(booking.shopId, 'appointment:update', booking);
+
+  return booking;
+}

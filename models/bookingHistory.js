@@ -12,7 +12,13 @@ const BookingSchema = new Schema({
   requestedTime: { type: Date, required: true },
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'rejected', 'completed', 'cancelled'],
+    // 'no-show' is applied manually (see services/bookingActions.js's
+    // markNoShow) — the reminder sweep optimistically auto-completes any
+    // confirmed booking once its time passes, since it has no way to know
+    // whether the customer actually came; the owner corrects it afterward
+    // if they didn't. Excluded from revenue/visit counts everywhere those
+    // only match status: 'completed'.
+    enum: ['pending', 'confirmed', 'rejected', 'completed', 'cancelled', 'no-show'],
     default: 'pending',
     required: true,
   },

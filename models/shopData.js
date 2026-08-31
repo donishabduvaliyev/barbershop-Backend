@@ -98,6 +98,9 @@ const BusinessSchema = new Schema({
   // routes/adminAuth.js handles picking which one to manage on login.
   ownerTelegramId: { type: Number, default: null },
   ownerClaimCode: { type: String, default: null },
+  // Automatic "it's been a while" nudges to lapsed customers — see
+  // jobs/winBack.js. On by default; owners can turn it off in Settings.
+  winBackEnabled: { type: Boolean, default: true },
 }, {
   timestamps: true,
 });

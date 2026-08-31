@@ -16,7 +16,9 @@ import adminShopRouter from './routes/adminShop.js';
 import adminAppointmentsRouter from './routes/adminAppointments.js';
 import adminStatsRouter from './routes/adminStats.js';
 import adminCustomersRouter from './routes/adminCustomers.js';
+import adminPromotionsRouter from './routes/adminPromotions.js';
 import { startReminderJob } from './jobs/reminders.js';
+import { startWinBackJob } from './jobs/winBack.js';
 
 dotenv.config();
 
@@ -61,6 +63,7 @@ app.use('/api/admin/shop', adminShopRouter);
 app.use('/api/admin/appointments', adminAppointmentsRouter);
 app.use('/api/admin/stats', adminStatsRouter);
 app.use('/api/admin/customers', adminCustomersRouter);
+app.use('/api/admin/promotions', adminPromotionsRouter);
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
@@ -92,14 +95,15 @@ mongoose.connect(process.env.MONGO_URI, {
     // second poller here just fights it for updates. Opt out with this flag
     // when you only need the REST/Socket.io API locally.
     if (process.env.DISABLE_TELEGRAM_POLLING === 'true') {
-        // Also skip the reminder sweep — it sends real messages (reminders,
-        // rating requests) based on real booking data, so a second local
-        // instance running it alongside production would double-send.
-        console.log('ℹ️ DISABLE_TELEGRAM_POLLING=true — skipping bot polling and the reminder job.');
+        // Also skip the reminder sweep and win-back job — both send real
+        // messages based on real booking data, so a second local instance
+        // running them alongside production would double-send.
+        console.log('ℹ️ DISABLE_TELEGRAM_POLLING=true — skipping bot polling and the reminder/win-back jobs.');
     } else {
         startBot();
         startShopControlBot();
         startReminderJob();
+        startWinBackJob();
     }
     httpServer.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);

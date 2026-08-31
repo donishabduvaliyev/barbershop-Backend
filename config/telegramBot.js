@@ -36,7 +36,7 @@ bot.on('polling_error', (err) => {
   console.error('❌ Customer bot polling error:', err.message);
 });
 
-const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
+export const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 
 // start the bot
 bot.onText(/\/start/, async (msg) => {

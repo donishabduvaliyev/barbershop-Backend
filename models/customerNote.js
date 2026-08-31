@@ -8,6 +8,10 @@ const CustomerNoteSchema = new Schema({
   shopId: { type: Schema.Types.ObjectId, ref: 'ServicesModel', required: true },
   userTelegramId: { type: Number, required: true },
   notes: { type: String, default: '' },
+  // When this customer was last sent an "it's been a while" win-back
+  // message (jobs/winBack.js) — compared against their latest completed
+  // visit so the same inactive streak never gets nudged twice.
+  lastWinBackSentAt: { type: Date, default: null },
 }, { timestamps: true });
 
 CustomerNoteSchema.index({ shopId: 1, userTelegramId: 1 }, { unique: true });

@@ -1,7 +1,7 @@
 import express from 'express';
 import Booking from '../models/bookingHistory.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
-import { confirmBooking, rejectBooking, completeBooking } from '../services/bookingActions.js';
+import { confirmBooking, rejectBooking, completeBooking, markNoShow } from '../services/bookingActions.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
@@ -93,6 +93,19 @@ router.patch('/:id/complete', async (req, res) => {
   } catch (error) {
     console.error('Error completing appointment:', error);
     res.status(500).json({ message: 'Server error completing appointment.' });
+  }
+});
+
+router.patch('/:id/no-show', async (req, res) => {
+  try {
+    const owned = await Booking.exists({ _id: req.params.id, shopId: req.shopId });
+    if (!owned) return res.status(404).json({ message: 'Appointment not found.' });
+
+    const booking = await markNoShow(req.params.id);
+    res.status(200).json(booking);
+  } catch (error) {
+    console.error('Error marking appointment no-show:', error);
+    res.status(500).json({ message: 'Server error marking appointment no-show.' });
   }
 });
 
