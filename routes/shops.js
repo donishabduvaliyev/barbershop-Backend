@@ -279,8 +279,31 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
     }
 
     const requestedTimeDate = new Date(requestedTime);
+    const requestedDateKey = toDateKey(requestedTimeDate);
+
+    // A staffId/serviceId is only ever honored if it actually belongs to
+    // this shop — never trust client-supplied name/price alongside it.
+    // Resolved before the working-hours check below, since a specific
+    // staff member's own hours (if they have any set) take precedence over
+    // the shop's blanket hours.
+    let resolvedStaffMember = null;
+    if (staffId) {
+      const staffMember = shop.staff?.id(staffId);
+      if (staffMember) {
+        if (staffMember.daysOff?.includes(requestedDateKey)) {
+          return res.status(400).json({ message: `${staffMember.name} is off that day — please pick another date or barber.` });
+        }
+        resolvedStaffMember = staffMember;
+      }
+    }
+    const resolvedStaffId = resolvedStaffMember?._id || null;
+    const resolvedStaffName = resolvedStaffMember?.name || '';
+
+    const effectiveWorkingHours = resolvedStaffMember?.workingHours?.length
+      ? resolvedStaffMember.workingHours
+      : shop.workingHours;
     try {
-      assertBookableTime(shop, requestedTimeDate);
+      assertBookableTime(effectiveWorkingHours, requestedTimeDate, resolvedStaffName || 'This shop');
     } catch (err) {
       if (err instanceof BookingValidationError) {
         return res.status(400).json({ message: err.message });
@@ -301,23 +324,6 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       return res.status(409).json({ message: 'You already have another appointment booked at this time.' });
     }
 
-    const requestedDateKey = toDateKey(requestedTimeDate);
-
-    // A staffId/serviceId is only ever honored if it actually belongs to
-    // this shop — never trust client-supplied name/price alongside it.
-    let resolvedStaffId = null;
-    let resolvedStaffName = '';
-    if (staffId) {
-      const staffMember = shop.staff?.id(staffId);
-      if (staffMember) {
-        if (staffMember.daysOff?.includes(requestedDateKey)) {
-          return res.status(400).json({ message: `${staffMember.name} is off that day — please pick another date or barber.` });
-        }
-        resolvedStaffId = staffMember._id;
-        resolvedStaffName = staffMember.name;
-      }
-    }
-
     // serviceId is optional for now — clients running an older build don't
     // send one yet. When present it must be real; when absent we just skip
     // attaching service/price info instead of failing the whole booking.
@@ -328,6 +334,17 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
         return res.status(400).json({ message: 'Selected service is no longer available.' });
       }
     }
+
+    // A staff member restricted to specific services (serviceIds non-empty)
+    // can't be booked for anything outside that list — same "don't just
+    // trust the UI filtered it" reasoning as the days-off check above.
+    if (resolvedStaffMember && resolvedService && resolvedStaffMember.serviceIds?.length > 0) {
+      const performsIt = resolvedStaffMember.serviceIds.some((id) => id.toString() === resolvedService._id.toString());
+      if (!performsIt) {
+        return res.status(400).json({ message: `${resolvedStaffMember.name} doesn't offer this service — please pick another barber or service.` });
+      }
+    }
+
     // Snapshot the name in whichever language the customer was actually
     // using, instead of always defaulting to English regardless of locale —
     // falls back to English only if that language variant is missing.
@@ -368,16 +385,22 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
         throw err;
       }
     } else {
-      // "Any available" — capacity is however many staff are both named and
-      // NOT off that day, or the shop's plain capacity number for shops
-      // that don't track individual staff. claimVirtualSlot races safely
-      // against concurrent requests for the same shop/hour via its own
-      // unique index.
-      const workingStaffCount = (shop.staff || []).filter((s) => !s.daysOff?.includes(requestedDateKey)).length;
-      const capacity = shop.staff?.length > 0 ? workingStaffCount : (shop.capacity || 1);
+      // "Any available" — capacity is however many staff are named, not off
+      // that day, and (if a service was picked) actually perform it — or
+      // the shop's plain capacity number for shops that don't track
+      // individual staff. claimVirtualSlot races safely against concurrent
+      // requests for the same shop/hour via its own unique index.
+      const qualifiedStaff = (shop.staff || []).filter((s) => {
+        if (s.daysOff?.includes(requestedDateKey)) return false;
+        if (resolvedService && s.serviceIds?.length > 0) {
+          return s.serviceIds.some((id) => id.toString() === resolvedService._id.toString());
+        }
+        return true;
+      });
+      const capacity = shop.staff?.length > 0 ? qualifiedStaff.length : (shop.capacity || 1);
       if (capacity === 0) {
-        console.log(`⏭️ Booking blocked (all staff off) — shop ${shopId} @ ${requestedTimeDate.toISOString()}`);
-        return res.status(409).json({ message: 'No staff are working that day — please pick another date.' });
+        console.log(`⏭️ Booking blocked (no qualified staff) — shop ${shopId} @ ${requestedTimeDate.toISOString()}`);
+        return res.status(409).json({ message: 'No staff can perform this on that date — please pick another date or service.' });
       }
       newBookingRequest = new Booking({ ...baseFields, staffId: null, staffName: '' });
       const claimed = await claimVirtualSlot(newBookingRequest, capacity);

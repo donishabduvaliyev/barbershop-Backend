@@ -347,10 +347,13 @@ router.patch('/staff/:staffId', async (req, res) => {
     const staffMember = shop.staff.id(req.params.staffId);
     if (!staffMember) return res.status(404).json({ message: 'Staff member not found.' });
 
-    const { name, title, photo } = req.body;
+    const { name, title, photo, serviceIds, commission, workingHours } = req.body;
     if (name !== undefined) staffMember.name = name;
     if (title !== undefined) staffMember.title = title;
     if (photo !== undefined) staffMember.photo = photo;
+    if (serviceIds !== undefined) staffMember.serviceIds = serviceIds;
+    if (commission !== undefined) staffMember.commission = commission;
+    if (workingHours !== undefined) staffMember.workingHours = workingHours;
 
     await shop.save();
     res.status(200).json(shop.staff);

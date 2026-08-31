@@ -15,6 +15,7 @@ import adminAuthRouter from './routes/adminAuth.js';
 import adminShopRouter from './routes/adminShop.js';
 import adminAppointmentsRouter from './routes/adminAppointments.js';
 import adminStatsRouter from './routes/adminStats.js';
+import adminCustomersRouter from './routes/adminCustomers.js';
 import { startReminderJob } from './jobs/reminders.js';
 
 dotenv.config();
@@ -59,6 +60,7 @@ app.use('/api/admin/auth', adminAuthRouter);
 app.use('/api/admin/shop', adminShopRouter);
 app.use('/api/admin/appointments', adminAppointmentsRouter);
 app.use('/api/admin/stats', adminStatsRouter);
+app.use('/api/admin/customers', adminCustomersRouter);
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
