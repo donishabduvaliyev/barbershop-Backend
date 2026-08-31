@@ -1,3 +1,12 @@
+// Must be set before anything else touches Date — every working-hours,
+// days-off, and "is this slot today" check in this codebase uses the
+// process's local timezone (getHours/getMonth/toLocaleDateString without an
+// explicit timeZone). Shops and customers are all in Uzbekistan, but the
+// host (Render) defaults to UTC, which silently shifted every booking check
+// by 5 hours and rejected genuinely-open, unbooked morning slots as
+// "outside working hours".
+process.env.TZ = 'Asia/Tashkent';
+
 import express from 'express';
 import http from 'http';
 import mongoose from 'mongoose';
