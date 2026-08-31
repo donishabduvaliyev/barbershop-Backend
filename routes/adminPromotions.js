@@ -4,7 +4,9 @@ import Promotion from '../models/promotion.js';
 import Booking from '../models/bookingHistory.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
 import { notifyUser } from '../config/telegramBot.js';
-import { DIVIDER } from '../utils/telegramFormat.js';
+import { DIVIDER, formatDate } from '../utils/telegramFormat.js';
+import { t, normalizeLanguage } from '../utils/botMessages.js';
+import User from '../models/userdata.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
@@ -90,13 +92,19 @@ router.post('/:id/send', async (req, res) => {
       return res.status(200).json({ recipientCount: targets.length });
     }
 
-    const message = [
-      `🎉 *${promotion.title}*`,
-      DIVIDER,
-      `Enjoy *${promotion.discountPercent}% off* through ${promotion.validTo.toLocaleDateString('en-US', { timeZone: 'UTC' })}.`,
-    ].join('\n');
+    // Each customer gets the message in their own language — promotion.title
+    // is admin-authored free text and stays as-is, only the surrounding
+    // template and date translate.
+    const users = await User.find({ telegramId: { $in: targets.map((c) => String(c._id)) } }).select('telegramId language');
+    const langByTelegramId = new Map(users.map((u) => [u.telegramId, normalizeLanguage(u.language)]));
 
     for (const target of targets) {
+      const lang = langByTelegramId.get(String(target._id)) || 'uz';
+      const message = [
+        `🎉 *${promotion.title}*`,
+        DIVIDER,
+        t(lang, 'customer.promoBody', { discount: promotion.discountPercent, date: formatDate(promotion.validTo, lang) }),
+      ].join('\n');
       await notifyUser(target._id, message);
       // Telegram's per-chat rate limit is generous, but a small stagger
       // keeps a large send from bursting the bot's overall message rate.

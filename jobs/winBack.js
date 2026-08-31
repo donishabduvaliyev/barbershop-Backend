@@ -3,7 +3,9 @@ import Booking from '../models/bookingHistory.js';
 import ServicesModel from '../models/shopData.js';
 import CustomerNote from '../models/customerNote.js';
 import JobLock from '../models/jobLock.js';
+import User from '../models/userdata.js';
 import { notifyUser, webAppUrl } from '../config/telegramBot.js';
+import { t, normalizeLanguage } from '../utils/botMessages.js';
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const LOCK_ID = 'winBackSweep';
@@ -81,16 +83,22 @@ async function winBackShop(shop) {
 }
 
 async function sendWinBack(shop, customer) {
-  const shopName = shop.name?.en || shop.name?.uz || shop.name?.ru || 'us';
+  // Live-lookup, not a snapshot — unlike a booking's userLanguage, there's
+  // no single booking to read from here (this aggregates across many), and
+  // a nudge sent weeks later should reflect whatever the customer's
+  // preference is *now*, not whatever it was at their last visit.
+  const user = await User.findOne({ telegramId: String(customer._id) }).select('language');
+  const lang = normalizeLanguage(user?.language);
+  const shopName = shop.name?.[lang] || shop.name?.en || shop.name?.uz || shop.name?.ru || 'us';
   const message = [
-    "💈 *We miss you!*",
+    t(lang, 'customer.winBackTitle'),
     '',
-    `It's been a few weeks since your last visit to *${shopName}*. Ready to book your next one?`,
+    t(lang, 'customer.winBackBody', { shopName }),
   ].join('\n');
 
   await notifyUser(customer._id, message, {
     reply_markup: {
-      inline_keyboard: [[{ text: '📅 Book now', web_app: { url: `${webAppUrl}/booking/${shop._id}` } }]],
+      inline_keyboard: [[{ text: t(lang, 'customer.bookNowButton'), web_app: { url: `${webAppUrl}/booking/${shop._id}` } }]],
     },
   });
 

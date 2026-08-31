@@ -6,6 +6,24 @@ import Booking from '../models/bookingHistory.js';
 import Review from '../models/review.js';
 import ServicesModel from '../models/shopData.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
+import { t, normalizeLanguage, LANGUAGE_NAMES } from '../utils/botMessages.js';
+
+// A customer's chosen (or web-app-inferred) language, looked up fresh per
+// message so a /language change takes effect immediately — unlike a
+// booking's snapshotted userLanguage, there's no "in-flight card" to keep
+// consistent here.
+async function getUserLanguage(telegramId) {
+  const user = await User.findOne({ telegramId: String(telegramId) }).select('language');
+  return normalizeLanguage(user?.language);
+}
+
+const languageKeyboard = {
+  inline_keyboard: [[
+    { text: "🇺🇿 O'zbekcha", callback_data: 'setlang_uz' },
+    { text: '🇷🇺 Русский', callback_data: 'setlang_ru' },
+    { text: '🇬🇧 English', callback_data: 'setlang_en' },
+  ]],
+};
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: false });
@@ -41,16 +59,17 @@ export const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 // start the bot
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
+    const lang = await getUserLanguage(msg.from.id);
 
     bot.sendMessage(
         chatId,
-        '👋 *Welcome to Tezkor*\n\nBook barbershops, salons and spas in seconds — right from Telegram.\n\nShare your phone number to get started:',
+        t(lang, 'customer.welcome'),
         {
             parse_mode: 'Markdown',
             reply_markup: {
                 keyboard: [
                     [{
-                        text: "📱 Send My Phone Number",
+                        text: t(lang, 'customer.sendPhoneButton'),
                         request_contact: true,
                     }],
                 ],
@@ -60,6 +79,14 @@ bot.onText(/\/start/, async (msg) => {
         }
     );
 });
+
+// Reachable any time, not just on first contact — inline picker updates
+// User.language, which every other message in this file looks up fresh.
+bot.onText(/\/language/, async (msg) => {
+    const chatId = msg.chat.id;
+    const lang = await getUserLanguage(msg.from.id);
+    bot.sendMessage(chatId, t(lang, 'customer.languagePrompt'), { reply_markup: languageKeyboard });
+});
 // add contact to db
 bot.on('contact', async (msg) => {
     console.log("Received contact information."); // <-- LOG 1
@@ -67,7 +94,8 @@ bot.on('contact', async (msg) => {
     const contact = msg.contact;
 
     if (msg.from.id !== contact.user_id) {
-        return bot.sendMessage(chatId, "Please share your *own* phone number.", { parse_mode: 'Markdown' });
+        const lang = await getUserLanguage(msg.from.id);
+        return bot.sendMessage(chatId, t(lang, 'customer.shareOwnPhone'), { parse_mode: 'Markdown' });
     }
 
     const userData = {
@@ -108,15 +136,16 @@ bot.on('contact', async (msg) => {
             console.log("New user saved successfully in DB."); // <-- LOG 8
         }
 
+        const lang = await getUserLanguage(msg.from.id);
         bot.sendMessage(
             chatId,
-            "✨ *You're all set!*\n\nYour account is ready — tap below to start booking.",
+            t(lang, 'customer.allSet'),
             {
                 parse_mode: 'Markdown',
                 reply_markup: {
                     keyboard: [
                         [{
-                            text: "🚀 Open Tezkor",
+                            text: t(lang, 'customer.openTezkorButton'),
                             web_app: { url: webAppUrl } // <-- THIS IS THE MAGIC
                         }]
                     ],
@@ -128,7 +157,8 @@ bot.on('contact', async (msg) => {
     } catch (error) {
         // This is the most important log. Let's see the full error.
         console.error("❌ DATABASE ERROR:", error);
-        bot.sendMessage(chatId, "❌ Something went wrong with the registration. Please try again later.");
+        const lang = await getUserLanguage(msg.from.id);
+        bot.sendMessage(chatId, t(lang, 'customer.registrationError'));
     }
 });
 
@@ -150,14 +180,18 @@ const buildStarKeyboard = (prefix, bookingId) => ({
   ],
 });
 
-// Called by jobs/reminders.js as bookings cross the 24h/3h-before thresholds.
-export const sendReminder = async (booking, whenLabel) => {
+// Called by jobs/reminders.js as bookings cross the 24h/3h-before
+// thresholds. whenKey is 'whenTomorrow' or 'whenInAFewHours' — a
+// translation key, not display text, so it renders in the customer's
+// language rather than always English.
+export const sendReminder = async (booking, whenKey) => {
+  const lang = normalizeLanguage(booking.userLanguage);
   const message = [
-    '⏰ *Appointment Reminder*',
+    t(lang, 'customer.reminderTitle'),
     DIVIDER,
-    `Don't forget — your visit to *${booking.shopName}* is ${whenLabel}.`,
-    `🗓 ${formatDateTime(booking.requestedTime)}`,
-    booking.staffName ? `✂️ *Barber:* ${booking.staffName}` : null,
+    t(lang, 'customer.reminderBody', { shopName: booking.shopName, whenLabel: t(lang, `customer.${whenKey}`) }),
+    `🗓 ${formatDateTime(booking.requestedTime, lang)}`,
+    booking.staffName ? t(lang, 'customer.reminderBarber', { staffName: booking.staffName }) : null,
   ].filter(Boolean).join('\n');
   await notifyUser(booking.userTelegramId, message);
 };
@@ -165,10 +199,11 @@ export const sendReminder = async (booking, whenLabel) => {
 // Called by services/bookingActions.js once a confirmed booking's time has
 // passed — kicks off the rating flow via inline star buttons.
 export const sendRatingRequest = async (booking) => {
+  const lang = normalizeLanguage(booking.userLanguage);
   const message = [
-    '💈 *How was your visit?*',
+    t(lang, 'customer.ratingTitle'),
     DIVIDER,
-    `Tell us how your appointment at *${booking.shopName}* went:`,
+    t(lang, 'customer.ratingBody', { shopName: booking.shopName }),
   ].join('\n');
   await notifyUser(booking.userTelegramId, message, {
     reply_markup: buildStarKeyboard('rate', booking._id),
@@ -183,16 +218,29 @@ bot.on('callback_query', async (callbackQuery) => {
   try {
     const { data, message } = callbackQuery;
     const [action, bookingId, starsRaw] = data.split('_');
-    if (action !== 'rate' && action !== 'staffrate') return;
 
-    const booking = await Booking.findById(bookingId);
-    if (!booking) {
+    if (action === 'setlang') {
+      const newLang = normalizeLanguage(bookingId); // second segment is the language code here
+      await User.updateOne({ telegramId: String(callbackQuery.from.id) }, { $set: { language: newLang } }, { upsert: true });
       bot.answerCallbackQuery(callbackQuery.id);
-      return bot.editMessageText('⚠️ This booking could not be found.', {
+      return bot.editMessageText(t(newLang, 'customer.languageSet'), {
         chat_id: message.chat.id,
         message_id: message.message_id,
       });
     }
+
+    if (action !== 'rate' && action !== 'staffrate') return;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      const lang = await getUserLanguage(callbackQuery.from.id);
+      bot.answerCallbackQuery(callbackQuery.id);
+      return bot.editMessageText(t(lang, 'customer.bookingNotFound'), {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+      });
+    }
+    const lang = normalizeLanguage(booking.userLanguage);
 
     if (action === 'rate') {
       const stars = parseInt(starsRaw, 10);
@@ -214,19 +262,19 @@ bot.on('callback_query', async (callbackQuery) => {
         }
       }
 
-      bot.editMessageText(`💈 *How was your visit?*\n${DIVIDER}\nThanks for your feedback! You rated it ${'⭐'.repeat(stars)}`, {
+      bot.editMessageText(t(lang, 'customer.ratingThanks', { divider: DIVIDER, stars: '⭐'.repeat(stars) }), {
         chat_id: message.chat.id,
         message_id: message.message_id,
         parse_mode: 'Markdown',
       });
 
       if (booking.staffId && booking.staffName && !existing?.staffRating) {
-        await bot.sendMessage(message.chat.id, `And how was *${booking.staffName}*?`, {
+        await bot.sendMessage(message.chat.id, t(lang, 'customer.staffRatingPrompt', { staffName: booking.staffName }), {
           parse_mode: 'Markdown',
           reply_markup: buildStarKeyboard('staffrate', booking._id),
         });
       }
-      bot.answerCallbackQuery(callbackQuery.id, { text: 'Thanks for rating!' });
+      bot.answerCallbackQuery(callbackQuery.id, { text: t(lang, 'customer.ratingToast') });
 
     } else if (action === 'staffrate') {
       const stars = parseInt(starsRaw, 10);
@@ -249,16 +297,16 @@ bot.on('callback_query', async (callbackQuery) => {
         }
       }
 
-      bot.editMessageText(`Thanks! You rated *${booking.staffName}* ${'⭐'.repeat(stars)}`, {
+      bot.editMessageText(t(lang, 'customer.staffRatingThanks', { staffName: booking.staffName, stars: '⭐'.repeat(stars) }), {
         chat_id: message.chat.id,
         message_id: message.message_id,
         parse_mode: 'Markdown',
       });
-      bot.answerCallbackQuery(callbackQuery.id, { text: 'Thanks!' });
+      bot.answerCallbackQuery(callbackQuery.id, { text: t(lang, 'customer.staffRatingToast') });
     }
   } catch (err) {
     console.error('Error handling rating callback:', err);
-    bot.answerCallbackQuery(callbackQuery.id, { text: 'Something went wrong.' }).catch(() => {});
+    bot.answerCallbackQuery(callbackQuery.id, { text: t('uz', 'customer.genericErrorToast') }).catch(() => {});
   }
 });
 

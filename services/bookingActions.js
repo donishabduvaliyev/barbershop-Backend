@@ -7,6 +7,7 @@ import { notifyUser, sendRatingRequest } from '../config/telegramBot.js';
 import { editBookingCard } from '../config/notificationBridge.js';
 import { emitToShop } from '../config/socket.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
+import { t, normalizeLanguage } from '../utils/botMessages.js';
 
 // A booking that's already left the 'pending' state has already been acted
 // on once (by the bot or the panel) — treat re-triggering as a no-op rather
@@ -20,15 +21,16 @@ export async function confirmBooking(bookingId) {
   await booking.save();
   console.log(`✅ Booking ${booking._id} confirmed — ${booking.shopName}, ${booking.userName} @ ${booking.requestedTime.toISOString()}`);
 
+  const userLang = normalizeLanguage(booking.userLanguage);
   const userMessage = [
-    '✅ *Booking Confirmed*',
+    t(userLang, 'customer.bookingConfirmedTitle'),
     DIVIDER,
-    `Your appointment at *${booking.shopName}* is set for 🗓 ${formatDateTime(booking.requestedTime)}.`,
+    t(userLang, 'customer.bookingConfirmedBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
     '',
-    'See you there! 💈',
+    t(userLang, 'customer.seeYouThere'),
   ].join('\n');
   await notifyUser(booking.userTelegramId, userMessage);
-  await editBookingCard(booking, '🟢 *CONFIRMED*');
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusConfirmed'));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
   return booking;
@@ -44,17 +46,18 @@ export async function rejectBooking(bookingId, reason) {
   await booking.save();
   console.log(`❌ Booking ${booking._id} rejected — ${booking.shopName}, ${booking.userName} @ ${booking.requestedTime.toISOString()} (reason: ${reason})`);
 
+  const userLang = normalizeLanguage(booking.userLanguage);
   const userMessage = [
-    '❌ *Booking Update*',
+    t(userLang, 'customer.bookingUpdateTitle'),
     DIVIDER,
-    `We couldn't confirm your booking at *${booking.shopName}* for 🗓 ${formatDateTime(booking.requestedTime)}.`,
+    t(userLang, 'customer.bookingRejectedBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
     '',
-    `*Reason:* ${reason}`,
+    t(userLang, 'customer.reasonLabel', { reason }),
     '',
-    'Feel free to pick another time that works for you.',
+    t(userLang, 'customer.pickAnotherTime'),
   ].join('\n');
   await notifyUser(booking.userTelegramId, userMessage);
-  await editBookingCard(booking, `🔴 *REJECTED*\n*Reason:* ${reason}`);
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusRejected', { reason }));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
   return booking;
@@ -71,7 +74,7 @@ export async function completeBooking(bookingId) {
   booking.status = 'completed';
   await booking.save();
   console.log(`🏁 Booking ${booking._id} marked completed — ${booking.shopName}, ${booking.userName}`);
-  await editBookingCard(booking, '✅ *COMPLETED*');
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusCompleted'));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
   if (!booking.ratingRequested) {
@@ -97,7 +100,7 @@ export async function markNoShow(bookingId) {
   booking.status = 'no-show';
   await booking.save();
   console.log(`🚫 Booking ${booking._id} marked no-show — ${booking.shopName}, ${booking.userName}`);
-  await editBookingCard(booking, '🚫 *NO-SHOW*');
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusNoShow'));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
   return booking;

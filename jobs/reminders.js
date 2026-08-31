@@ -48,7 +48,7 @@ async function runReminderSweep() {
       requestedTime: { $gt: now, $lte: in24h },
     });
     for (const booking of due24h) {
-      await sendReminder(booking, 'tomorrow');
+      await sendReminder(booking, 'whenTomorrow');
       booking.reminded24h = true;
       await booking.save();
     }
@@ -64,7 +64,7 @@ async function runReminderSweep() {
       requestedTime: { $gt: now, $lte: in3h },
     });
     for (const booking of due3h) {
-      await sendReminder(booking, 'in a few hours');
+      await sendReminder(booking, 'whenInAFewHours');
       booking.reminded3h = true;
       await booking.save();
     }

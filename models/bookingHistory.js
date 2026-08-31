@@ -25,6 +25,13 @@ const BookingSchema = new Schema({
   rejectionReason: {
     type: String,
   },
+  // Snapshotted once at booking creation (same reasoning as serviceName/
+  // staffName below) — a later /language change never rewrites a card or
+  // message mid-flow. userLanguage comes from the web app's booking-request
+  // `lang` field; ownerLanguage is resolved from OwnerPreference the moment
+  // the shop-control bot first posts this booking. See utils/botMessages.js.
+  userLanguage: { type: String, enum: ['en', 'ru', 'uz'], default: 'uz' },
+  ownerLanguage: { type: String, enum: ['en', 'ru', 'uz'], default: 'uz' },
   staffId: { type: Schema.Types.ObjectId, default: null },
   staffName: { type: String, default: '' },
   // Only set for "any available" bookings (staffId: null) — an atomically

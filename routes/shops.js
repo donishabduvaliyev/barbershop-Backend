@@ -6,6 +6,7 @@ import Booking from '../models/bookingHistory.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
+import { normalizeLanguage } from '../utils/botMessages.js';
 import { toDateKey } from '../utils/dateKey.js';
 
 const router = express.Router();
@@ -352,6 +353,18 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       ? (resolvedService.name?.[lang] || resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '')
       : '';
 
+    const userLanguage = normalizeLanguage(lang);
+
+    // Only backfills — an explicit /language choice in the customer bot
+    // always wins over whatever the web app happened to send, so this never
+    // overwrites a language the customer already picked on purpose.
+    if (lang) {
+      User.updateOne(
+        { telegramId: String(userTelegramId), language: null },
+        { $set: { language: userLanguage } }
+      ).catch((err) => console.error('Failed to backfill user language:', err));
+    }
+
     const baseFields = {
       shopId,
       shopName,
@@ -365,6 +378,7 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       serviceName,
       price: resolvedService?.price ?? null,
       status: 'pending',
+      userLanguage,
     };
 
     let newBookingRequest;
