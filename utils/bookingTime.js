@@ -7,7 +7,12 @@ export class BookingValidationError extends Error {}
 // Appointments are booked in fixed 1-hour slots — this is both a scheduling
 // simplification (see routes/shops.js conflict-checking) and matches how
 // these shops actually work: one client occupies a barber for about an hour.
-export function assertBookableTime(shop, requestedTime) {
+//
+// Takes a plain workingHours array rather than a shop, so the same
+// validator serves both a shop's blanket hours and a specific staff
+// member's override (routes/shops.js resolves which one applies before
+// calling this — an empty staff override falls back to the shop's).
+export function assertBookableTime(workingHours, requestedTime, closedLabel = 'This shop') {
   if (!(requestedTime instanceof Date) || Number.isNaN(requestedTime.getTime())) {
     throw new BookingValidationError('Invalid requested time.');
   }
@@ -21,15 +26,15 @@ export function assertBookableTime(shop, requestedTime) {
   }
 
   const dayName = requestedTime.toLocaleDateString('en-US', { weekday: 'long' });
-  const schedule = (shop.workingHours || []).find((wh) => wh.days.includes(dayName));
+  const schedule = (workingHours || []).find((wh) => wh.days.includes(dayName));
   if (!schedule) {
-    throw new BookingValidationError(`This shop is closed on ${dayName}s.`);
+    throw new BookingValidationError(`${closedLabel} is closed on ${dayName}s.`);
   }
 
   const [fromHour] = schedule.from.split(':').map(Number);
   const [toHour] = schedule.to.split(':').map(Number);
   const hour = requestedTime.getHours();
   if (hour < fromHour || hour >= toHour) {
-    throw new BookingValidationError(`This shop is only open ${schedule.from}–${schedule.to} on ${dayName}s.`);
+    throw new BookingValidationError(`${closedLabel} is only open ${schedule.from}–${schedule.to} on ${dayName}s.`);
   }
 }

@@ -14,6 +14,16 @@ const ServiceSchema = new Schema({
   durationMinutes: { type: Number, required: true },
 }, { timestamps: true });
 
+const WorkingHoursSchema = new Schema({
+  days: [{
+    type: String,
+    enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+    required: true,
+  }],
+  from: { type: String, required: true },
+  to: { type: String, required: true },
+}, { _id: false });
+
 const StaffSchema = new Schema({
   name: { type: String, required: true },
   title: { type: String, default: '' },
@@ -25,18 +35,16 @@ const StaffSchema = new Schema({
   // scheduled ad hoc. Enforced server-side in routes/shops.js's booking
   // validation, not just hidden in the UI — see utils/dateKey.js.
   daysOff: { type: [String], default: [] },
+  // Which shop services this person actually performs — empty means
+  // "performs everything" (the backward-compatible default for staff no
+  // one has restricted yet), so booking a service filters staff by this.
+  serviceIds: { type: [Schema.Types.ObjectId], default: [] },
+  // Overrides the shop's blanket workingHours when set; empty means "same
+  // hours as the shop". Same shape so one editor UI serves both.
+  workingHours: { type: [WorkingHoursSchema], default: [] },
+  // Owner's own bookkeeping reference — not consumed by any booking logic.
+  commission: { type: Number, min: 0, max: 100, default: null },
 }, { timestamps: true });
-
-
-const WorkingHoursSchema = new Schema({
-  days: [{
-    type: String,
-    enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-    required: true,
-  }],
-  from: { type: String, required: true },
-  to: { type: String, required: true },  
-}, { _id: false });
 
 
 const BusinessSchema = new Schema({
