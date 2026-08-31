@@ -20,6 +20,11 @@ const StaffSchema = new Schema({
   photo: { type: String, default: '' },
   rating: { type: Number, default: 0 },
   reviewsCount: { type: Number, default: 0 },
+  // Specific calendar dates ('YYYY-MM-DD', shop-local) this staff member is
+  // off — not a recurring weekly pattern, since a day off is normally
+  // scheduled ad hoc. Enforced server-side in routes/shops.js's booking
+  // validation, not just hidden in the UI — see utils/dateKey.js.
+  daysOff: { type: [String], default: [] },
 }, { timestamps: true });
 
 

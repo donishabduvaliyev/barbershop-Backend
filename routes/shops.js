@@ -6,6 +6,7 @@ import Booking from '../models/bookingHistory.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
+import { toDateKey } from '../utils/dateKey.js';
 
 const router = express.Router();
 
@@ -300,6 +301,8 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       return res.status(409).json({ message: 'You already have another appointment booked at this time.' });
     }
 
+    const requestedDateKey = toDateKey(requestedTimeDate);
+
     // A staffId/serviceId is only ever honored if it actually belongs to
     // this shop — never trust client-supplied name/price alongside it.
     let resolvedStaffId = null;
@@ -307,6 +310,9 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
     if (staffId) {
       const staffMember = shop.staff?.id(staffId);
       if (staffMember) {
+        if (staffMember.daysOff?.includes(requestedDateKey)) {
+          return res.status(400).json({ message: `${staffMember.name} is off that day — please pick another date or barber.` });
+        }
         resolvedStaffId = staffMember._id;
         resolvedStaffName = staffMember.name;
       }
@@ -362,11 +368,17 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
         throw err;
       }
     } else {
-      // "Any available" — capacity is however many staff are named, or the
-      // shop's plain capacity number for shops that don't track individual
-      // staff. claimVirtualSlot races safely against concurrent requests
-      // for the same shop/hour via its own unique index.
-      const capacity = shop.staff?.length > 0 ? shop.staff.length : (shop.capacity || 1);
+      // "Any available" — capacity is however many staff are both named and
+      // NOT off that day, or the shop's plain capacity number for shops
+      // that don't track individual staff. claimVirtualSlot races safely
+      // against concurrent requests for the same shop/hour via its own
+      // unique index.
+      const workingStaffCount = (shop.staff || []).filter((s) => !s.daysOff?.includes(requestedDateKey)).length;
+      const capacity = shop.staff?.length > 0 ? workingStaffCount : (shop.capacity || 1);
+      if (capacity === 0) {
+        console.log(`⏭️ Booking blocked (all staff off) — shop ${shopId} @ ${requestedTimeDate.toISOString()}`);
+        return res.status(409).json({ message: 'No staff are working that day — please pick another date.' });
+      }
       newBookingRequest = new Booking({ ...baseFields, staffId: null, staffName: '' });
       const claimed = await claimVirtualSlot(newBookingRequest, capacity);
       if (!claimed) {

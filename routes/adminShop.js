@@ -4,6 +4,8 @@ import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
 import { uploadImage, deleteImageByUrl } from '../config/r2.js';
+import { rejectBooking } from '../services/bookingActions.js';
+import { dateKeyToRange } from '../utils/dateKey.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
@@ -173,6 +175,80 @@ router.post('/staff/:staffId/photo', upload.single('photo'), async (req, res) =>
   } catch (error) {
     console.error('Error uploading staff photo:', error);
     res.status(500).json({ message: error.message?.includes('image') ? error.message : 'Server error uploading photo.' });
+  }
+});
+
+// ---- Staff days off ----
+// Scheduling a day off is enforced server-side in routes/shops.js's booking
+// validation too — this isn't just a UI hint, a direct API call can't book
+// a staff member on a day marked off here.
+
+router.post('/staff/:staffId/days-off', async (req, res) => {
+  try {
+    const { date } = req.body;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
+      return res.status(400).json({ message: 'date must be in YYYY-MM-DD format.' });
+    }
+
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const staffMember = shop.staff.id(req.params.staffId);
+    if (!staffMember) return res.status(404).json({ message: 'Staff member not found.' });
+
+    if (staffMember.daysOff.includes(date)) {
+      return res.status(200).json({ daysOff: staffMember.daysOff });
+    }
+
+    // Adding a day off after bookings already exist for that day is exactly
+    // the conflict the owner asked us to guard against — surface it instead
+    // of silently creating a no-show, and only proceed past it (rejecting
+    // those bookings with a clear reason) once explicitly confirmed.
+    const { start, end } = dateKeyToRange(date);
+    const conflicts = await Booking.find({
+      shopId: req.shopId,
+      staffId: staffMember._id,
+      status: { $in: ACTIVE_STATUSES },
+      requestedTime: { $gte: start, $lt: end },
+    }).select('_id userName requestedTime');
+
+    if (conflicts.length > 0 && req.query.force !== 'true') {
+      return res.status(409).json({
+        message: `${staffMember.name} already has ${conflicts.length} appointment${conflicts.length === 1 ? '' : 's'} booked that day.`,
+        conflicts: conflicts.map((b) => ({ id: b._id, userName: b.userName, requestedTime: b.requestedTime })),
+      });
+    }
+
+    staffMember.daysOff.push(date);
+    await shop.save();
+
+    for (const conflict of conflicts) {
+      await rejectBooking(conflict._id, `${staffMember.name} is off that day — please rebook for another date.`);
+    }
+
+    res.status(200).json({ daysOff: staffMember.daysOff, rejectedCount: conflicts.length });
+  } catch (error) {
+    console.error('Error adding day off:', error);
+    res.status(500).json({ message: 'Server error adding day off.' });
+  }
+});
+
+router.delete('/staff/:staffId/days-off', async (req, res) => {
+  try {
+    const { date } = req.body;
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const staffMember = shop.staff.id(req.params.staffId);
+    if (!staffMember) return res.status(404).json({ message: 'Staff member not found.' });
+
+    staffMember.daysOff = staffMember.daysOff.filter((d) => d !== date);
+    await shop.save();
+
+    res.status(200).json({ daysOff: staffMember.daysOff });
+  } catch (error) {
+    console.error('Error removing day off:', error);
+    res.status(500).json({ message: 'Server error removing day off.' });
   }
 });
 
