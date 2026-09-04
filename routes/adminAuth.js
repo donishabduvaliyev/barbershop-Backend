@@ -16,7 +16,7 @@ router.post('/telegram', async (req, res) => {
     const { initData } = req.body;
     const user = verifyTelegramInitData(initData, process.env.SHOP_CONTROL_BOT_TOKEN);
     if (!user) {
-      return res.status(401).json({ message: 'Please open this dashboard from the Tezkor Shop Control bot.' });
+      return res.status(401).json({ message: 'Please open this dashboard from the  Shop Control bot.' });
     }
 
     const shops = await ServicesModel.find({ ownerTelegramId: user.id });
