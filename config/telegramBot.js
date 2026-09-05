@@ -143,12 +143,7 @@ bot.on('contact', async (msg) => {
             {
                 parse_mode: 'Markdown',
                 reply_markup: {
-                    keyboard: [
-                        [{
-                            text: t(lang, 'customer.openTezkorButton'),
-                            web_app: { url: webAppUrl } // <-- THIS IS THE MAGIC
-                        }]
-                    ],
+                   
                     resize_keyboard: true
                 }
             }
