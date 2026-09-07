@@ -1,7 +1,8 @@
 import express from 'express';
 import ServicesModel from '../models/shopData.js';
+import SuperAdmin from '../models/superAdmin.js';
 import { verifyTelegramInitData } from '../middleware/telegramAuth.js';
-import { signAdminToken, signIdentityToken, verifyAdminToken } from '../middleware/adminAuth.js';
+import { signAdminToken, signIdentityToken, signSuperAdminToken, verifyAdminToken } from '../middleware/adminAuth.js';
 
 const router = express.Router();
 
@@ -17,6 +18,15 @@ router.post('/telegram', async (req, res) => {
     const user = verifyTelegramInitData(initData, process.env.SHOP_CONTROL_BOT_TOKEN);
     if (!user) {
       return res.status(401).json({ message: 'Please open this dashboard from the  Shop Control bot.' });
+    }
+
+    // Checked before shop ownership — a platform operator lands in the
+    // super-admin panel even if they also happen to own a shop themselves
+    // (they reach that shop separately, via "Manage as this shop").
+    const superAdmin = await SuperAdmin.findOne({ telegramId: user.id });
+    if (superAdmin) {
+      const token = signSuperAdminToken({ telegramId: user.id });
+      return res.status(200).json({ token, role: 'superadmin' });
     }
 
     const shops = await ServicesModel.find({ ownerTelegramId: user.id });
@@ -93,7 +103,11 @@ router.get('/my-shops', async (req, res) => {
 if (process.env.ADMIN_DEV_LOGIN_ENABLED === 'true' && process.env.NODE_ENV !== 'production') {
   router.post('/dev-login', async (req, res) => {
     try {
-      const { shopId } = req.body;
+      const { shopId, superadmin } = req.body;
+      if (superadmin) {
+        const token = signSuperAdminToken({ telegramId: 0 });
+        return res.status(200).json({ token, role: 'superadmin' });
+      }
       const shop = shopId ? await ServicesModel.findById(shopId) : await ServicesModel.findOne({});
       if (!shop) {
         return res.status(404).json({ message: 'No shop found to log into.' });

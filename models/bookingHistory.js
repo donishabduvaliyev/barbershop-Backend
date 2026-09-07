@@ -91,6 +91,12 @@ BookingSchema.index(
   }
 );
 
+// Every other index here is shopId-first (correct for per-shop admin
+// queries), but the super-admin dashboard aggregates bookings by status/date
+// across ALL shops with no shopId filter at all — without this, that query
+// would fall back to a full collection scan as booking volume grows.
+BookingSchema.index({ status: 1, requestedTime: 1 });
+
 const Booking = model('Booking', BookingSchema, 'BookingData');
 
 export default Booking;

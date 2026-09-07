@@ -101,6 +101,14 @@ const BusinessSchema = new Schema({
   // Automatic "it's been a while" nudges to lapsed customers — see
   // jobs/winBack.js. On by default; owners can turn it off in Settings.
   winBackEnabled: { type: Boolean, default: true },
+  // Soft-delete, set only via the super admin's DELETE /superadmin/shops/:id
+  // (routes/superAdmin.js). A shop's Booking/Review history references
+  // shopId, so this is never a hard delete — an archived shop just drops out
+  // of every customer-facing listing (see routes/shops.js) while its stats
+  // and history stay intact and it remains visible/restorable in the
+  // super-admin panel.
+  isArchived: { type: Boolean, default: false },
+  archivedAt: { type: Date, default: null },
 }, {
   timestamps: true,
 });

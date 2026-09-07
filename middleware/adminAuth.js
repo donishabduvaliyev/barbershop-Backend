@@ -19,6 +19,13 @@ export function signIdentityToken({ telegramId }) {
   return jwt.sign({ telegramId, shopId: null }, JWT_SECRET, { expiresIn: IDENTITY_TOKEN_TTL });
 }
 
+// Platform-wide session, not scoped to any one shop — see
+// routes/superAdmin.js and requireSuperAdmin below. Same TTL as a normal
+// admin session.
+export function signSuperAdminToken({ telegramId }) {
+  return jwt.sign({ telegramId, shopId: null, role: 'superadmin' }, JWT_SECRET, { expiresIn: TOKEN_TTL });
+}
+
 export function verifyAdminToken(token) {
   try {
     return jwt.verify(token, JWT_SECRET);
@@ -41,6 +48,24 @@ export function requireShopAdmin(req, res, next) {
   }
 
   req.shopId = payload.shopId;
+  req.telegramId = payload.telegramId;
+  next();
+}
+
+// Express middleware for /api/superadmin/* — rejects unless the token was
+// issued by signSuperAdminToken (role: 'superadmin'). Deliberately a
+// separate check from requireShopAdmin rather than "any token with no
+// shopId", since an identity-only token (signIdentityToken, mid-shop-select)
+// also has shopId: null and must NOT be treated as super-admin access.
+export function requireSuperAdmin(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = verifyAdminToken(token);
+
+  if (!payload || payload.role !== 'superadmin') {
+    return res.status(401).json({ message: 'Please log in again.' });
+  }
+
   req.telegramId = payload.telegramId;
   next();
 }

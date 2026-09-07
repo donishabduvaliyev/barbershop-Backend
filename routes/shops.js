@@ -31,6 +31,9 @@ const bookingRateLimiter = rateLimit({
 router.get('/home-feed', async (req, res) => {
   try {
     const feed = await ServicesModel.aggregate([
+      // Soft-deleted shops (routes/superAdmin.js's DELETE /shops/:id) must
+      // never reach customers, however this feed is otherwise filtered.
+      { $match: { isArchived: { $ne: true } } },
       // First, sort all shops by rating to get the best ones at the top
       { $sort: { rating: -1 } },
 
@@ -141,7 +144,7 @@ router.post('/search-shops', async (req, res) => {
 router.post('/discovery-search', async (req, res) => {
   try {
     const { searchTerm, category, userLocation } = req.body;
-    const baseMatch = { isOperational: true };
+    const baseMatch = { isOperational: true, isArchived: { $ne: true } };
 
     if (category) {
       baseMatch.category = category;
@@ -503,7 +506,7 @@ router.get('/shops/:id', async (req, res) => {
 
 router.get('/allShops', async (req, res) => {
   try {
-    const shops = await ServicesModel.find({});
+    const shops = await ServicesModel.find({ isArchived: { $ne: true } });
     res.status(200).json(shops);
   } catch (error) {
     console.error('Error fetching shops:', error);
