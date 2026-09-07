@@ -5,7 +5,7 @@ import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
-import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
+import { assertBookableTime, isWithinWorkingHours, BookingValidationError } from '../utils/bookingTime.js';
 import { normalizeLanguage } from '../utils/botMessages.js';
 import { toDateKey } from '../utils/dateKey.js';
 
@@ -491,6 +491,110 @@ router.get('/service/:id/availability', async (req, res) => {
   } catch (error) {
     console.error('Error fetching shop availability:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Regex metacharacters in free-text user input (e.g. "haircut (kids)")
+// would otherwise either throw on an invalid pattern or match in
+// unintended ways — the existing name-search endpoints above don't escape
+// this, but new code shouldn't repeat that gap.
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Cross-shop "find available now" search: given a free-text service query
+// and a desired hour, returns every operational shop that (a) has at least
+// one service matching the query and (b) has open capacity for that
+// service at that exact hour — so a customer who just wants "a haircut,
+// today at 8pm, any shop" doesn't have to check shops one by one. This
+// mirrors the single-shop "any available" resolution already used by
+// POST /booking-requests and GET /service/:id/availability (shop-level
+// workingHours, staff qualified by day-off + serviceIds, capacity =
+// qualified-staff count when the shop has staff else shop.capacity), just
+// evaluated read-only across many shops instead of one.
+router.post('/available-now', async (req, res) => {
+  try {
+    const { serviceQuery, requestedTime } = req.body || {};
+
+    const query = typeof serviceQuery === 'string' ? serviceQuery.trim().slice(0, 60) : '';
+    if (!query) {
+      return res.status(400).json({ message: 'Please enter what service you need.' });
+    }
+
+    const requestedTimeDate = new Date(requestedTime);
+    if (Number.isNaN(requestedTimeDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid requested time.' });
+    }
+    if (requestedTimeDate.getTime() <= Date.now()) {
+      return res.status(400).json({ message: 'Please pick a time in the future.' });
+    }
+
+    const regex = new RegExp(escapeRegex(query), 'i');
+    const dateKey = toDateKey(requestedTimeDate);
+
+    const candidateShops = await ServicesModel.find({
+      isOperational: true,
+      isArchived: { $ne: true },
+      $or: [
+        { 'services.name.en': regex },
+        { 'services.name.uz': regex },
+        { 'services.name.ru': regex },
+      ],
+    })
+      .select('name category image rating reviewsCount address services staff workingHours capacity')
+      .limit(200);
+
+    const shopIds = candidateShops.map((s) => s._id);
+    const bookedCounts = await Booking.aggregate([
+      { $match: { shopId: { $in: shopIds }, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES } } },
+      { $group: { _id: '$shopId', count: { $sum: 1 } } },
+    ]);
+    const bookedCountByShopId = new Map(bookedCounts.map((b) => [String(b._id), b.count]));
+
+    const results = [];
+    for (const shop of candidateShops) {
+      if (!isWithinWorkingHours(shop.workingHours, requestedTimeDate)) continue;
+
+      const matchingServices = shop.services.filter(
+        (s) => regex.test(s.name?.en) || regex.test(s.name?.uz) || regex.test(s.name?.ru)
+      );
+      if (matchingServices.length === 0) continue;
+
+      const bookedCount = bookedCountByShopId.get(String(shop._id)) || 0;
+
+      const matchedServices = matchingServices.filter((service) => {
+        const qualifiedStaff = (shop.staff || []).filter(
+          (m) => !m.daysOff?.includes(dateKey) && (!m.serviceIds?.length || m.serviceIds.includes(service._id))
+        );
+        const capacity = shop.staff?.length ? qualifiedStaff.length : (shop.capacity || 1);
+        return capacity > 0 && bookedCount < capacity;
+      });
+
+      if (matchedServices.length === 0) continue;
+
+      results.push({
+        shopId: shop._id,
+        name: shop.name,
+        image: shop.image,
+        category: shop.category,
+        rating: shop.rating,
+        reviewsCount: shop.reviewsCount,
+        address: shop.address,
+        matchedServices: matchedServices.map((s) => ({
+          serviceId: s._id,
+          name: s.name,
+          price: s.price,
+          durationMinutes: s.durationMinutes,
+        })),
+      });
+    }
+
+    results.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+    res.status(200).json({ requestedTime: requestedTimeDate.toISOString(), results });
+  } catch (error) {
+    console.error('Error running available-now search:', error);
+    res.status(500).json({ message: 'Server error while searching for availability.' });
   }
 });
 

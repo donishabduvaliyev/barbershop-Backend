@@ -4,6 +4,27 @@
 
 export class BookingValidationError extends Error {}
 
+// Shared by assertBookableTime below and by the read-only cross-shop
+// "is this hour open" check (utils/bookingTime.js's isWithinWorkingHours,
+// used by routes/shops.js's /available-now) — a single source of truth for
+// "which schedule entry (if any) covers this day".
+function scheduleForDay(workingHours, requestedTime) {
+  const dayName = requestedTime.toLocaleDateString('en-US', { weekday: 'long' });
+  return (workingHours || []).find((wh) => wh.days.includes(dayName)) || null;
+}
+
+// Pure boolean version of the day/hour check inside assertBookableTime,
+// with no future/on-the-hour requirement — used where we just need "is the
+// shop open at this instant", not "is this a valid slot to book".
+export function isWithinWorkingHours(workingHours, requestedTime) {
+  const schedule = scheduleForDay(workingHours, requestedTime);
+  if (!schedule) return false;
+  const [fromHour] = schedule.from.split(':').map(Number);
+  const [toHour] = schedule.to.split(':').map(Number);
+  const hour = requestedTime.getHours();
+  return hour >= fromHour && hour < toHour;
+}
+
 // Appointments are booked in fixed 1-hour slots — this is both a scheduling
 // simplification (see routes/shops.js conflict-checking) and matches how
 // these shops actually work: one client occupies a barber for about an hour.
@@ -26,7 +47,7 @@ export function assertBookableTime(workingHours, requestedTime, closedLabel = 'T
   }
 
   const dayName = requestedTime.toLocaleDateString('en-US', { weekday: 'long' });
-  const schedule = (workingHours || []).find((wh) => wh.days.includes(dayName));
+  const schedule = scheduleForDay(workingHours, requestedTime);
   if (!schedule) {
     throw new BookingValidationError(`${closedLabel} is closed on ${dayName}s.`);
   }
