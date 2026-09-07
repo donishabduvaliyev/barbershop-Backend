@@ -2,8 +2,9 @@ import express from 'express';
 import mongoose from 'mongoose';
 import Promotion from '../models/promotion.js';
 import Booking from '../models/bookingHistory.js';
+import ServicesModel from '../models/shopData.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
-import { notifyUser } from '../config/telegramBot.js';
+import { notifyUser, webAppUrl } from '../config/telegramBot.js';
 import { DIVIDER, formatDate } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
 import User from '../models/userdata.js';
@@ -86,6 +87,13 @@ router.post('/:id/send', async (req, res) => {
     const promotion = await Promotion.findOne({ _id: req.params.id, shopId: req.shopId });
     if (!promotion) return res.status(404).json({ message: 'Promotion not found.' });
 
+    // Needed so the message names the shop the discount is actually from —
+    // without it every promo reads the same regardless of which shop sent
+    // it — and so the button below opens exactly that shop, not a generic
+    // home screen.
+    const shop = await ServicesModel.findById(req.shopId).select('name');
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
     const targets = await segmentCustomers(req.shopId, segment);
 
     if (req.query.confirm !== 'true') {
@@ -100,12 +108,21 @@ router.post('/:id/send', async (req, res) => {
 
     for (const target of targets) {
       const lang = langByTelegramId.get(String(target._id)) || 'uz';
+      const shopName = shop.name?.[lang] || shop.name?.en || shop.name?.uz || shop.name?.ru || 'us';
       const message = [
         `🎉 *${promotion.title}*`,
         DIVIDER,
-        t(lang, 'customer.promoBody', { discount: promotion.discountPercent, date: formatDate(promotion.validTo, lang) }),
+        t(lang, 'customer.promoBody', { discount: promotion.discountPercent, date: formatDate(promotion.validTo, lang), shopName }),
       ].join('\n');
-      await notifyUser(target._id, message);
+      // Opens the mini app straight into this shop's booking screen —
+      // matches the same web_app deep-link pattern jobs/winBack.js already
+      // uses, so tapping the button always lands on the shop the offer is
+      // actually from, not wherever the app happens to open by default.
+      await notifyUser(target._id, message, {
+        reply_markup: {
+          inline_keyboard: [[{ text: t(lang, 'customer.bookNowButton'), web_app: { url: `${webAppUrl}/booking/${shop._id}` } }]],
+        },
+      });
       // Telegram's per-chat rate limit is generous, but a small stagger
       // keeps a large send from bursting the bot's overall message rate.
       await new Promise((resolve) => setTimeout(resolve, 60));
