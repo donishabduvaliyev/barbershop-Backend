@@ -56,12 +56,19 @@ export const formatDate = (date, lang = 'uz') => {
 // config/shopControlBot.js's notifyShopOwnerOfNewBooking).
 export const formatBookingCard = (booking, statusLine) => {
   const lang = normalizeLanguage(booking.ownerLanguage);
+  // A real t.me/<username> link only exists when the customer has set a
+  // public Telegram username — Telegram has no way to open a chat with an
+  // arbitrary numeric user id, so falling back to "@<id>" (as this used to)
+  // rendered as dead, unclickable text instead of a working link.
+  const telegramContact = booking.userTelegramUsername
+    ? `https://t.me/${booking.userTelegramUsername}`
+    : t(lang, 'owner.cardNoTelegramUsername');
   const lines = [
     t(lang, 'owner.cardTitle'),
     DIVIDER,
     `${t(lang, 'owner.cardShop')} ${booking.shopName}`,
     `${t(lang, 'owner.cardClient')} ${booking.userName}`,
-    `${t(lang, 'owner.cardTelegram')} @${booking.userTelegramUsername || booking.userTelegramId}`,
+    `${t(lang, 'owner.cardTelegram')} ${telegramContact}`,
     `${t(lang, 'owner.cardPhone')} ${booking.userNumber}`,
     `${t(lang, 'owner.cardTime')} ${formatDateTime(booking.requestedTime, lang)}`,
   ];
