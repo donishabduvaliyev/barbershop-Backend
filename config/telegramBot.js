@@ -56,6 +56,22 @@ bot.on('polling_error', (err) => {
 
 export const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';
 
+// Short name of this bot's Mini App, attached once via @BotFather ->
+// /newapp — required for the t.me/<bot>/<shortname>?startapp=... direct
+// links used by the per-shop QR codes (routes/superAdmin.js).
+export const miniAppShortName = process.env.TELEGRAM_MINI_APP_SHORT_NAME || '';
+
+// Cached after the first call — bot.getMe() doesn't change at runtime, and
+// this is now called per QR-link request rather than once like the shop
+// -control bot's claim-code message (config/shopControlBot.js:232).
+let cachedUsername = null;
+export async function getBotUsername() {
+  if (!cachedUsername) {
+    cachedUsername = (await bot.getMe()).username;
+  }
+  return cachedUsername;
+}
+
 // start the bot
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
