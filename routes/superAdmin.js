@@ -7,7 +7,7 @@ import Review from '../models/review.js';
 import PageView from '../models/pageView.js';
 import { requireSuperAdmin, signAdminToken } from '../middleware/adminAuth.js';
 import { toDateKey, dateKeyToRange } from '../utils/dateKey.js';
-import { getBotUsername, miniAppShortName } from '../config/telegramBot.js';
+import { getBotUsername } from '../config/telegramBot.js';
 
 const router = express.Router();
 router.use(requireSuperAdmin);
@@ -170,22 +170,19 @@ router.post('/shops/:id/manage-as', async (req, res) => {
   }
 });
 
-// A per-shop QR code's target — a Telegram Mini App "direct link" that
-// opens the app straight on this shop's page (no bot chat, no extra tap).
-// Requires TELEGRAM_MINI_APP_SHORT_NAME to be set (see config/telegramBot.js
-// and .env — a one-time @BotFather step); the shop id travels as the
-// startapp payload, which the customer app reads from
-// tg.initDataUnsafe.start_param on load (src/context/context.jsx).
+// A per-shop QR code's target — a bot deep link (t.me/<bot>?start=shop_<id>).
+// Deliberately NOT a Mini-App-direct-link (t.me/<bot>/<shortname>?startapp=) —
+// requiring an explicit /start guarantees Telegram will let this bot message
+// the customer later (booking confirm/reject notifications depend on that).
+// config/telegramBot.js's /start handler reads the shop_<id> payload and
+// replies with an "Open shop" button pointing at /service/<id>.
 router.get('/shops/:id/qr-link', async (req, res) => {
   try {
     const shop = await ServicesModel.findById(req.params.id).select('_id');
     if (!shop) return res.status(404).json({ message: 'Shop not found.' });
-    if (!miniAppShortName) {
-      return res.status(503).json({ message: 'Mini App short name not configured — set TELEGRAM_MINI_APP_SHORT_NAME after attaching a Mini App via @BotFather.' });
-    }
 
     const username = await getBotUsername();
-    const url = `https://t.me/${username}/${miniAppShortName}?startapp=shop_${shop._id}`;
+    const url = `https://t.me/${username}?start=shop_${shop._id}`;
     res.status(200).json({ url });
   } catch (error) {
     console.error('Error building shop QR link:', error);

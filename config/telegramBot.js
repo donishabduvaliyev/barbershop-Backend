@@ -72,10 +72,35 @@ export async function getBotUsername() {
   return cachedUsername;
 }
 
-// start the bot
-bot.onText(/\/start/, async (msg) => {
+// start the bot — a per-shop QR code encodes a deep link
+// (t.me/<bot>?start=shop_<id>, built in routes/superAdmin.js's /qr-link)
+// so /start can arrive with a payload after it. Deliberately requiring an
+// explicit /start (rather than opening the mini app directly) guarantees
+// Telegram will let this bot message the customer later — the booking
+// confirm/reject notifications (services/bookingActions.js) depend on that.
+bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const lang = await getUserLanguage(msg.from.id);
+
+    const shopMatch = match?.[1]?.match(/^shop_([a-f0-9]{24})$/);
+    if (shopMatch) {
+        const shop = await ServicesModel.findById(shopMatch[1]).select('name');
+        if (shop) {
+            const shopName = shop.name?.[lang] || shop.name?.en || shop.name?.uz || shop.name?.ru || '';
+            return bot.sendMessage(
+                chatId,
+                t(lang, 'customer.qrShopBody', { shopName }),
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [[{ text: t(lang, 'customer.openShopButton'), web_app: { url: `${webAppUrl}/service/${shop._id}` } }]],
+                    },
+                }
+            );
+        }
+        // Shop was deleted/bad id — fall through to the normal welcome
+        // flow below rather than leaving the customer with nothing.
+    }
 
     bot.sendMessage(
         chatId,
