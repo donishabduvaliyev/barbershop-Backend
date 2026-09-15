@@ -5,24 +5,32 @@
 export class BookingValidationError extends Error {}
 
 // Shared by assertBookableTime below and by the read-only cross-shop
-// "is this hour open" check (utils/bookingTime.js's isWithinWorkingHours,
-// used by routes/shops.js's /available-now) — a single source of truth for
-// "which schedule entry (if any) covers this day".
-function scheduleForDay(workingHours, requestedTime) {
+// "is this hour open" check (isWithinWorkingHours, used by
+// routes/shops.js's /available-now) — a single source of truth for "which
+// schedule entries (if any) cover this day".
+//
+// Returns an ARRAY, not a single entry — a shop/staff member can have more
+// than one entry for the same day (e.g. 09:00-13:00 and 14:00-18:00 to
+// express a lunch break), and every entry covering the day must be
+// considered, not just the first one found.
+function schedulesForDay(workingHours, requestedTime) {
   const dayName = requestedTime.toLocaleDateString('en-US', { weekday: 'long' });
-  return (workingHours || []).find((wh) => wh.days.includes(dayName)) || null;
+  return (workingHours || []).filter((wh) => wh.days.includes(dayName));
+}
+
+function hourFallsInSchedule(schedule, hour) {
+  const [fromHour] = schedule.from.split(':').map(Number);
+  const [toHour] = schedule.to.split(':').map(Number);
+  return hour >= fromHour && hour < toHour;
 }
 
 // Pure boolean version of the day/hour check inside assertBookableTime,
 // with no future/on-the-hour requirement — used where we just need "is the
 // shop open at this instant", not "is this a valid slot to book".
 export function isWithinWorkingHours(workingHours, requestedTime) {
-  const schedule = scheduleForDay(workingHours, requestedTime);
-  if (!schedule) return false;
-  const [fromHour] = schedule.from.split(':').map(Number);
-  const [toHour] = schedule.to.split(':').map(Number);
+  const schedules = schedulesForDay(workingHours, requestedTime);
   const hour = requestedTime.getHours();
-  return hour >= fromHour && hour < toHour;
+  return schedules.some((schedule) => hourFallsInSchedule(schedule, hour));
 }
 
 // Appointments are booked in fixed 1-hour slots — this is both a scheduling
@@ -47,15 +55,15 @@ export function assertBookableTime(workingHours, requestedTime, closedLabel = 'T
   }
 
   const dayName = requestedTime.toLocaleDateString('en-US', { weekday: 'long' });
-  const schedule = scheduleForDay(workingHours, requestedTime);
-  if (!schedule) {
+  const schedules = schedulesForDay(workingHours, requestedTime);
+  if (schedules.length === 0) {
     throw new BookingValidationError(`${closedLabel} is closed on ${dayName}s.`);
   }
 
-  const [fromHour] = schedule.from.split(':').map(Number);
-  const [toHour] = schedule.to.split(':').map(Number);
   const hour = requestedTime.getHours();
-  if (hour < fromHour || hour >= toHour) {
-    throw new BookingValidationError(`${closedLabel} is only open ${schedule.from}–${schedule.to} on ${dayName}s.`);
+  const inRange = schedules.some((schedule) => hourFallsInSchedule(schedule, hour));
+  if (!inRange) {
+    const ranges = schedules.map((s) => `${s.from}–${s.to}`).join(', ');
+    throw new BookingValidationError(`${closedLabel} is only open ${ranges} on ${dayName}s.`);
   }
 }

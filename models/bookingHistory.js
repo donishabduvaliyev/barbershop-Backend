@@ -60,6 +60,11 @@ const BookingSchema = new Schema({
   ratingRequested: { type: Boolean, default: false },
 
   adminNotes: { type: String },
+  // How this booking was created — every customer-app/bot booking is
+  // implicitly 'bot'; the admin panel's manual-booking flow (walk-ins and
+  // phone calls) sets this explicitly. Purely informational, doesn't
+  // affect any validation/availability logic.
+  source: { type: String, enum: ['bot', 'phone', 'walk-in'], default: 'bot' },
 }, { timestamps: true });
 
 // Hard, race-proof guarantee that a specific staff member can never hold two
@@ -96,6 +101,12 @@ BookingSchema.index(
 // across ALL shops with no shopId filter at all — without this, that query
 // would fall back to a full collection scan as booking volume grows.
 BookingSchema.index({ status: 1, requestedTime: 1 });
+
+// The admin calendar page scans "every booking for this shop on this day"
+// on every load — a plain (non-unique) index so that's an index scan
+// rather than falling back to the partial-unique ones above as an
+// incidental prefix match.
+BookingSchema.index({ shopId: 1, requestedTime: 1 });
 
 const Booking = model('Booking', BookingSchema, 'BookingData');
 

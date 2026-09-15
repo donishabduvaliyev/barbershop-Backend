@@ -12,6 +12,12 @@ const ServiceSchema = new Schema({
   name: LocalizedStringSchema,
   price: { type: Number, required: true },
   durationMinutes: { type: Number, required: true },
+  // Temporarily hides this service from the customer app and every booking
+  // picker (bookable-service validation in routes/shops.js) without
+  // deleting it — deleting already has its own upcoming-bookings safety
+  // check (routes/adminShop.js) and is meant to be permanent; this is for
+  // a short pause ("out of product for this").
+  isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 
 const WorkingHoursSchema = new Schema({
@@ -44,6 +50,14 @@ const StaffSchema = new Schema({
   workingHours: { type: [WorkingHoursSchema], default: [] },
   // Owner's own bookkeeping reference — not consumed by any booking logic.
   commission: { type: Number, min: 0, max: 100, default: null },
+  // Manual "called in sick / stepped out" override — separate from daysOff
+  // (a pre-scheduled whole day) and workingHours (the recurring weekly
+  // schedule). Flipping this off blocks new "any available" assignments to
+  // this staff member for as long as it's off, without touching their
+  // schedule. A specific-staff booking request is still just a request the
+  // owner can reject — this only affects automatic "any available" slot
+  // claiming (routes/shops.js's qualifiedStaff filter).
+  isAvailableNow: { type: Boolean, default: true },
 }, { timestamps: true });
 
 
