@@ -52,11 +52,11 @@ const StaffSchema = new Schema({
   commission: { type: Number, min: 0, max: 100, default: null },
   // Manual "called in sick / stepped out" override — separate from daysOff
   // (a pre-scheduled whole day) and workingHours (the recurring weekly
-  // schedule). Flipping this off blocks new "any available" assignments to
-  // this staff member for as long as it's off, without touching their
-  // schedule. A specific-staff booking request is still just a request the
-  // owner can reject — this only affects automatic "any available" slot
-  // claiming (routes/shops.js's qualifiedStaff filter).
+  // schedule), and deliberately NOT date-stamped: it's a live "is he here
+  // right now" status, so booking logic only ever consults it for TODAY's
+  // slots (both "any available" and a specific-staff pick) — a future-dated
+  // booking for this same staff member is unaffected, so the owner
+  // forgetting to flip it back on can't silently block next week too.
   isAvailableNow: { type: Boolean, default: true },
 }, { timestamps: true });
 
