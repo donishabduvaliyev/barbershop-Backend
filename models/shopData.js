@@ -67,7 +67,11 @@ const BusinessSchema = new Schema({
   category: {
     type: String,
     required: true,
-    enum: ["Nail Salon", "Barbershop", "Hair Salon"], 
+    // Kept in sync with SHOP_CATEGORIES in barbershop-main's SearchPege.jsx —
+    // that's the customer-facing list of filterable categories, and a value
+    // it advertises that isn't allowed here would show up as a permanently
+    // empty search filter (no shop could ever be assigned to it).
+    enum: ["Nail Salon", "Barbershop", "Hair Salon", "Massage Therapy", "Beauty Spas"], 
   },
   description: LocalizedStringSchema,
   image: { type: String, required: true }, 
