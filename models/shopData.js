@@ -108,7 +108,7 @@ const BusinessSchema = new Schema({
     max: 4,
   },
   isPromoted: { type: Boolean, default: false },
-  promotionRank: { type: Number, default: null },
+  promotionRank: { type: Number, default: null, min: 1 },
   isEditorsChoice: { type: Boolean, default: false },
   // Links this shop to its owner's Telegram account, set once via the
   // shop-control bot's /claim flow (see config/shopControlBot.js). One
