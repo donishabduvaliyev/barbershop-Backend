@@ -131,6 +131,16 @@ const BusinessSchema = new Schema({
 BusinessSchema.index({ location: '2dsphere' });
 BusinessSchema.index({ ownerTelegramId: 1 });
 
+// Every customer-facing browse/search query (routes/shops.js's home-feed,
+// discovery-search, search-shops) filters on isOperational/isArchived and
+// sorts by rating or promotionRank — without an index covering that shape,
+// each of those queries is a full collection scan plus an in-memory sort on
+// every single request, which is exactly the kind of per-query cost that
+// gets expensive fastest under concurrent load.
+BusinessSchema.index({ isOperational: 1, isArchived: 1, rating: -1 });
+BusinessSchema.index({ isOperational: 1, isArchived: 1, isPromoted: 1, promotionRank: 1 });
+BusinessSchema.index({ category: 1 });
+
 const ServicesModel = model('ServicesModel', BusinessSchema, 'Shops-data');
 
 export default ServicesModel;

@@ -12,6 +12,7 @@ import { normalizeLanguage } from '../utils/botMessages.js';
 import { toDateKey } from '../utils/dateKey.js';
 import { createBooking, BookingConflictError, BookingNotFoundError } from '../services/createBooking.js';
 import { emitToShop } from '../config/socket.js';
+import { getCached, setCached } from '../utils/simpleCache.js';
 
 const router = express.Router();
 
@@ -32,8 +33,19 @@ const bookingRateLimiter = rateLimit({
 
 
 
+// This is every customer's app-open request, identical for everyone at any
+// given moment — a short cache turns a burst of simultaneous opens into one
+// real database round-trip instead of one per visitor. 20s is short enough
+// that a shop's rating change or a newly-added shop shows up almost
+// immediately, but long enough to absorb real traffic bursts.
+const HOME_FEED_CACHE_KEY = 'home-feed';
+const HOME_FEED_TTL_MS = 20_000;
+
 router.get('/home-feed', async (req, res) => {
   try {
+    const cached = getCached(HOME_FEED_CACHE_KEY);
+    if (cached) return res.status(200).json(cached);
+
     const feed = await ServicesModel.aggregate([
       // Soft-deleted shops (routes/superAdmin.js's DELETE /shops/:id) must
       // never reach customers, however this feed is otherwise filtered.
@@ -59,6 +71,7 @@ router.get('/home-feed', async (req, res) => {
       }
     ]);
 
+    setCached(HOME_FEED_CACHE_KEY, feed, HOME_FEED_TTL_MS);
     res.status(200).json(feed);
 
   } catch (error) {
@@ -211,9 +224,23 @@ function filterAndOrderManualShops(shopIds, shopsById, baseMatch) {
     });
 }
 
+// Only the plain "just opened the search page" view is identical across
+// every customer and thus safe to serve from a shared cache — a search
+// term, category filter, or location (which drives the personalized "near
+// you" shelf) makes the result different per caller, so those always hit
+// the database fresh.
+const DISCOVERY_DEFAULT_CACHE_KEY = 'discovery-search-default';
+const DISCOVERY_DEFAULT_TTL_MS = 15_000;
+
 router.post('/discovery-search', async (req, res) => {
   try {
     const { searchTerm, category, userLocation } = req.body;
+    const isDefaultView = !searchTerm && !category && !userLocation;
+    if (isDefaultView) {
+      const cached = getCached(DISCOVERY_DEFAULT_CACHE_KEY);
+      if (cached) return res.status(200).json(cached);
+    }
+
     const baseMatch = { isOperational: true, isArchived: { $ne: true } };
 
     if (category) {
@@ -227,31 +254,43 @@ router.post('/discovery-search', async (req, res) => {
       ];
     }
 
-    const advertisedShops = await ServicesModel.find({ ...baseMatch, isPromoted: true })
-      .sort({ promotionRank: 1 })
-      .limit(5);
-
-    const shelves = await SearchCategory.find({ isActive: true }).sort({ order: 1, createdAt: 1 });
+    // advertisedShops and shelves don't depend on each other — fetched
+    // together rather than one after the other. Each round-trip to Mongo
+    // costs full network latency, and this endpoint is hit on every
+    // keystroke of the search box, so cutting sequential round-trips
+    // matters far more here than on a rarely-called admin route.
+    const [advertisedShops, shelves] = await Promise.all([
+      ServicesModel.find({ ...baseMatch, isPromoted: true }).sort({ promotionRank: 1 }).limit(5),
+      SearchCategory.find({ isActive: true }).sort({ order: 1, createdAt: 1 }),
+    ]);
 
     // Every manual shelf's shopIds might overlap — fetch every referenced
-    // shop once rather than once per category.
+    // shop once rather than once per category. Depends on `shelves`, so it
+    // can't join the Promise.all above.
     const manualShopIds = shelves.filter((s) => s.type === 'manual').flatMap((s) => s.shopIds);
     const manualShops = manualShopIds.length
       ? await ServicesModel.find({ _id: { $in: manualShopIds } })
       : [];
     const shopsById = new Map(manualShops.map((s) => [String(s._id), s]));
 
-    const categories = [];
-    for (const shelf of shelves) {
-      const shops = shelf.type === 'manual'
+    // Resolved concurrently, not one shelf at a time — a sequential loop
+    // here means every search request pays for N round-trips to Mongo in a
+    // row instead of the cost of the slowest one, which adds up fast once
+    // more than a handful of people are searching at once.
+    const resolvedShelves = await Promise.all(shelves.map(async (shelf) => ({
+      shelf,
+      shops: shelf.type === 'manual'
         ? filterAndOrderManualShops(shelf.shopIds, shopsById, baseMatch)
-        : await resolveAutoRuleShops(shelf.autoRule, baseMatch, userLocation);
+        : await resolveAutoRuleShops(shelf.autoRule, baseMatch, userLocation),
+    })));
 
-      if (shops === null) continue; // e.g. nearYou with no userLocation yet
-      categories.push({ key: shelf.key, label: shelf.label, icon: shelf.icon, shops });
-    }
+    const categories = resolvedShelves
+      .filter(({ shops }) => shops !== null) // e.g. nearYou with no userLocation yet
+      .map(({ shelf, shops }) => ({ key: shelf.key, label: shelf.label, icon: shelf.icon, shops }));
 
-    res.status(200).json({ advertisedShops, categories });
+    const response = { advertisedShops, categories };
+    if (isDefaultView) setCached(DISCOVERY_DEFAULT_CACHE_KEY, response, DISCOVERY_DEFAULT_TTL_MS);
+    res.status(200).json(response);
 
   } catch (error) {
     console.error('Error fetching discovery data:', error);
