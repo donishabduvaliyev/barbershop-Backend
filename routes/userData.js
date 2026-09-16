@@ -8,6 +8,7 @@ import shopControlBot from '../config/shopControlBot.js';
 import { editBookingCard } from '../config/notificationBridge.js';
 import { emitToShop } from '../config/socket.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
+import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 
 
 const router = express.Router();
@@ -178,8 +179,8 @@ router.patch('/bookings/:id/cancel', requireTelegramAuth, async (req, res) => {
                 const formattedTime = new Date(bookingToCancel.requestedTime).toLocaleString();
                 const notificationMessage = [
                     '⚠️ *Booking Cancelled by Client*',
-                    `*Shop:* ${bookingToCancel.shopName}`,
-                    `*Client:* ${bookingToCancel.userName || bookingToCancel.userTelegramUsername || 'N/A'}`,
+                    `*Shop:* ${escapeMarkdown(bookingToCancel.shopName)}`,
+                    `*Client:* ${escapeMarkdown(bookingToCancel.userName || bookingToCancel.userTelegramUsername || 'N/A')}`,
                     `*Time:* ${formattedTime}`,
                 ].join('\n');
                 await shopControlBot.sendMessage(shop.ownerTelegramId, notificationMessage, { parse_mode: 'Markdown' });

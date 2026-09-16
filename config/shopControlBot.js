@@ -15,6 +15,7 @@ import { confirmBooking, rejectBooking } from '../services/bookingActions.js';
 import { DIVIDER, formatBookingCard } from '../utils/telegramFormat.js';
 import { notifyUser as notifyCustomerBotUser } from './telegramBot.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
+import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 
 // Looked up fresh per command reply so a /language change takes effect
 // immediately — unlike a booking card's snapshotted ownerLanguage, there's
@@ -84,7 +85,7 @@ shopControlBot.onText(/\/start/, async (msg) => {
     const lang = await getOwnerLanguage(msg.from.id);
     const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('name');
     if (shops.length > 0) {
-      const names = shops.map((s) => `• ${s.name?.[lang] || s.name?.en || t(lang, 'owner.yourShopFallback')}`).join('\n');
+      const names = shops.map((s) => `• ${escapeMarkdown(s.name?.[lang] || s.name?.en || t(lang, 'owner.yourShopFallback'))}`).join('\n');
       return shopControlBot.sendMessage(
         chatId,
         t(lang, 'owner.welcomeBackTitle', { names, multiShopSuffix: shops.length > 1 ? t(lang, 'owner.multiShopSuffix') : '' }),
@@ -129,7 +130,7 @@ shopControlBot.onText(/\/claim (.+)/, async (msg, match) => {
 
     shopControlBot.sendMessage(
       chatId,
-      t(lang, 'owner.shopLinked', { shopName: shop.name?.[lang] || shop.name?.en || t(lang, 'owner.yourShopFallback') }),
+      t(lang, 'owner.shopLinked', { shopName: escapeMarkdown(shop.name?.[lang] || shop.name?.en || t(lang, 'owner.yourShopFallback')) }),
       { parse_mode: 'Markdown', reply_markup: dashboardKeyboard }
     );
   } catch (err) {
@@ -146,7 +147,7 @@ shopControlBot.onText(/^\/myshops$/, async (msg) => {
     if (shops.length === 0) {
       return shopControlBot.sendMessage(chatId, t(lang, 'owner.noShopsYet'), { parse_mode: 'Markdown' });
     }
-    const lines = shops.map((s) => t(lang, 'owner.unclaimLine', { shopName: s.name?.[lang] || s.name?.en, shopId: s._id }));
+    const lines = shops.map((s) => t(lang, 'owner.unclaimLine', { shopName: escapeMarkdown(s.name?.[lang] || s.name?.en), shopId: s._id }));
     shopControlBot.sendMessage(chatId, t(lang, 'owner.yourShopsTitle', { lines: lines.join('\n\n') }), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('shopControlBot /myshops error:', err);
@@ -171,7 +172,7 @@ shopControlBot.onText(/\/unclaim (.+)/, async (msg, match) => {
     console.log(`🔓 Shop "${shop.name?.en}" unclaimed by Telegram user ${msg.from.id}`);
     shopControlBot.sendMessage(
       chatId,
-      t(lang, 'owner.shopUnclaimed', { shopName: shop.name?.[lang] || shop.name?.en }),
+      t(lang, 'owner.shopUnclaimed', { shopName: escapeMarkdown(shop.name?.[lang] || shop.name?.en) }),
       { parse_mode: 'Markdown' }
     );
   } catch (err) {
@@ -191,7 +192,7 @@ shopControlBot.onText(/^\/unclaimed$/, async (msg) => {
     if (shops.length === 0) {
       return shopControlBot.sendMessage(chatId, t(lang, 'owner.everyShopLinked'));
     }
-    const lines = shops.map((s) => `• ${s.name?.[lang] || s.name?.en}`).join('\n');
+    const lines = shops.map((s) => `• ${escapeMarkdown(s.name?.[lang] || s.name?.en)}`).join('\n');
     shopControlBot.sendMessage(chatId, t(lang, 'owner.unclaimedShopsTitle', { lines }), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('shopControlBot /unclaimed error:', err);
@@ -209,7 +210,7 @@ shopControlBot.onText(/\/gencode (.+)/, async (msg, match) => {
       return shopControlBot.sendMessage(chatId, t(lang, 'owner.noShopMatches', { query }));
     }
     if (shops.length > 1) {
-      const lines = shops.map((s) => `• ${s.name?.en} — \`/gencode ${s._id}\``).join('\n');
+      const lines = shops.map((s) => `• ${escapeMarkdown(s.name?.en)} — \`/gencode ${s._id}\``).join('\n');
       return shopControlBot.sendMessage(chatId, t(lang, 'owner.multipleShopsMatch', { query, lines }), { parse_mode: 'Markdown' });
     }
 
@@ -217,7 +218,7 @@ shopControlBot.onText(/\/gencode (.+)/, async (msg, match) => {
     if (shop.ownerTelegramId) {
       return shopControlBot.sendMessage(
         chatId,
-        t(lang, 'owner.alreadyClaimed', { shopName: shop.name?.en, ownerTelegramId: shop.ownerTelegramId, shopId: shop._id }),
+        t(lang, 'owner.alreadyClaimed', { shopName: escapeMarkdown(shop.name?.en), ownerTelegramId: shop.ownerTelegramId, shopId: shop._id }),
         { parse_mode: 'Markdown' }
       );
     }
@@ -229,7 +230,7 @@ shopControlBot.onText(/\/gencode (.+)/, async (msg, match) => {
 
     shopControlBot.sendMessage(
       chatId,
-      t(lang, 'owner.claimCodeGenerated', { shopName: shop.name?.en, code, botUsername: (await shopControlBot.getMe()).username }),
+      t(lang, 'owner.claimCodeGenerated', { shopName: escapeMarkdown(shop.name?.en), code, botUsername: (await shopControlBot.getMe()).username }),
       { parse_mode: 'Markdown' }
     );
   } catch (err) {
@@ -249,7 +250,7 @@ shopControlBot.onText(/\/resetowner (.+)/, async (msg, match) => {
       return shopControlBot.sendMessage(chatId, t(lang, 'owner.noShopMatches', { query }));
     }
     if (shops.length > 1) {
-      const lines = shops.map((s) => `• ${s.name?.en} — \`/resetowner ${s._id}\``).join('\n');
+      const lines = shops.map((s) => `• ${escapeMarkdown(s.name?.en)} — \`/resetowner ${s._id}\``).join('\n');
       return shopControlBot.sendMessage(chatId, t(lang, 'owner.multipleShopsMatch', { query, lines }), { parse_mode: 'Markdown' });
     }
 
@@ -264,7 +265,7 @@ shopControlBot.onText(/\/resetowner (.+)/, async (msg, match) => {
     shopControlBot.sendMessage(
       chatId,
       t(lang, 'owner.ownershipReset', {
-        shopName: shop.name?.en,
+        shopName: escapeMarkdown(shop.name?.en),
         code,
         previousOwnerSuffix: previousOwner ? t(lang, 'owner.previousOwnerSuffix', { previousOwner }) : '',
       }),
@@ -296,7 +297,7 @@ export const notifyShopOwnerOfNewBooking = async (booking) => {
     if (operatorChatId) {
       await notifyCustomerBotUser(
         operatorChatId,
-        `⚠️ *Unclaimed shop got a booking*\n${DIVIDER}\n*Shop:* ${shop?.name?.en || booking.shopName}\n*Client:* ${booking.userName}\nThis shop's owner hasn't linked their Telegram account yet — run \`generateClaimCode.js\` and send them a claim code.`
+        `⚠️ *Unclaimed shop got a booking*\n${DIVIDER}\n*Shop:* ${escapeMarkdown(shop?.name?.en || booking.shopName)}\n*Client:* ${escapeMarkdown(booking.userName)}\nThis shop's owner hasn't linked their Telegram account yet — run \`generateClaimCode.js\` and send them a claim code.`
       );
     }
     return;
@@ -376,11 +377,12 @@ shopControlBot.on('callback_query', async (callbackQuery) => {
       // Persisted on the booking itself (not an in-memory Map) so a server
       // restart between "tapped Reject" and "typed a reason" doesn't strand
       // this booking awaiting a reply that can never arrive.
-      booking.awaitingRejectionReason = true;
-      await booking.save();
-      await shopControlBot.sendMessage(message.chat.id, t(lang, 'owner.pleaseReplyReason'), {
+      const prompt = await shopControlBot.sendMessage(message.chat.id, t(lang, 'owner.pleaseReplyReason'), {
         reply_markup: { force_reply: true },
       });
+      booking.awaitingRejectionReason = true;
+      booking.awaitingReasonPromptMessageId = prompt.message_id;
+      await booking.save();
       shopControlBot.answerCallbackQuery(callbackQuery.id);
     }
   } catch (err) {
@@ -393,13 +395,19 @@ shopControlBot.on('message', async (msg) => {
   try {
     if (!msg.reply_to_message) return;
 
+    // Matched to the exact "please reply with a reason" prompt the owner
+    // hit Reply on — not just "whichever booking most recently asked",
+    // which misattributed the reason (and the whole rejection) to the wrong
+    // booking whenever two were awaiting a reason at once.
     const booking = await Booking.findOne({
       notificationChatId: msg.chat.id,
       awaitingRejectionReason: true,
-    }).sort({ updatedAt: -1 });
+      awaitingReasonPromptMessageId: msg.reply_to_message.message_id,
+    });
     if (!booking) return;
 
     booking.awaitingRejectionReason = false;
+    booking.awaitingReasonPromptMessageId = null;
     await booking.save();
     await rejectBooking(booking._id, msg.text);
     await shopControlBot.sendMessage(msg.chat.id, t(booking.ownerLanguage, 'owner.reasonSentToClient'));

@@ -54,6 +54,13 @@ const BookingSchema = new Schema({
   // kept in an in-memory Map so a server restart mid-flow doesn't strand
   // the booking on "Awaiting rejection reason…" forever.
   awaitingRejectionReason: { type: Boolean, default: false },
+  // The id of the "please reply with a reason" prompt message itself (not
+  // notificationMessageId, which is the booking card) — an owner who
+  // rejects two bookings before answering the first prompt must have their
+  // reply matched to whichever prompt they actually hit Reply on, not just
+  // whichever booking was most recently touched (see shopControlBot.js's
+  // `message` handler).
+  awaitingReasonPromptMessageId: { type: Number, default: null },
   // Reminder/completion job bookkeeping — see jobs/reminders.js
   reminded24h: { type: Boolean, default: false },
   reminded3h: { type: Boolean, default: false },

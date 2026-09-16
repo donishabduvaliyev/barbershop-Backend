@@ -6,6 +6,7 @@ import JobLock from '../models/jobLock.js';
 import User from '../models/userdata.js';
 import { notifyUser, webAppUrl } from '../config/telegramBot.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
+import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const LOCK_ID = 'winBackSweep';
@@ -93,7 +94,7 @@ async function sendWinBack(shop, customer) {
   const message = [
     t(lang, 'customer.winBackTitle'),
     '',
-    t(lang, 'customer.winBackBody', { shopName }),
+    t(lang, 'customer.winBackBody', { shopName: escapeMarkdown(shopName) }),
   ].join('\n');
 
   await notifyUser(customer._id, message, {

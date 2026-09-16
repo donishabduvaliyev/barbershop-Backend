@@ -9,6 +9,7 @@ import { editBookingCard } from '../config/notificationBridge.js';
 import { emitToShop } from '../config/socket.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
+import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
 import { toDateKey } from '../utils/dateKey.js';
 import { BookingConflictError } from './createBooking.js';
@@ -16,20 +17,27 @@ import { BookingConflictError } from './createBooking.js';
 // A booking that's already left the 'pending' state has already been acted
 // on once (by the bot or the panel) — treat re-triggering as a no-op rather
 // than re-sending notifications or overwriting a later status.
+//
+// The status check-and-set is one atomic findOneAndUpdate, not a separate
+// findById + save — a plain read-then-write left a real race where two
+// rapid taps on the same Confirm/Reject button (or a tap racing the
+// reminder sweep's auto-complete) could both pass the in-app status check
+// before either write landed, sending the customer two contradictory
+// notifications and double-editing the owner's card.
 export async function confirmBooking(bookingId) {
-  const booking = await Booking.findById(bookingId);
-  if (!booking) return null;
-  if (booking.status !== 'pending') return booking;
-
-  booking.status = 'confirmed';
-  await booking.save();
+  const booking = await Booking.findOneAndUpdate(
+    { _id: bookingId, status: 'pending' },
+    { $set: { status: 'confirmed' } },
+    { new: true }
+  );
+  if (!booking) return Booking.findById(bookingId);
   console.log(`✅ Booking ${booking._id} confirmed — ${booking.shopName}, ${booking.userName} @ ${booking.requestedTime.toISOString()}`);
 
   const userLang = normalizeLanguage(booking.userLanguage);
   const userMessage = [
     t(userLang, 'customer.bookingConfirmedTitle'),
     DIVIDER,
-    t(userLang, 'customer.bookingConfirmedBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
+    t(userLang, 'customer.bookingConfirmedBody', { shopName: escapeMarkdown(booking.shopName), dateTime: formatDateTime(booking.requestedTime, userLang) }),
     '',
     t(userLang, 'customer.seeYouThere'),
   ].join('\n');
@@ -41,27 +49,26 @@ export async function confirmBooking(bookingId) {
 }
 
 export async function rejectBooking(bookingId, reason) {
-  const booking = await Booking.findById(bookingId);
-  if (!booking) return null;
-  if (!['pending', 'confirmed'].includes(booking.status)) return booking;
-
-  booking.status = 'rejected';
-  booking.rejectionReason = reason;
-  await booking.save();
+  const booking = await Booking.findOneAndUpdate(
+    { _id: bookingId, status: { $in: ['pending', 'confirmed'] } },
+    { $set: { status: 'rejected', rejectionReason: reason } },
+    { new: true }
+  );
+  if (!booking) return Booking.findById(bookingId);
   console.log(`❌ Booking ${booking._id} rejected — ${booking.shopName}, ${booking.userName} @ ${booking.requestedTime.toISOString()} (reason: ${reason})`);
 
   const userLang = normalizeLanguage(booking.userLanguage);
   const userMessage = [
     t(userLang, 'customer.bookingUpdateTitle'),
     DIVIDER,
-    t(userLang, 'customer.bookingRejectedBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
+    t(userLang, 'customer.bookingRejectedBody', { shopName: escapeMarkdown(booking.shopName), dateTime: formatDateTime(booking.requestedTime, userLang) }),
     '',
-    t(userLang, 'customer.reasonLabel', { reason }),
+    t(userLang, 'customer.reasonLabel', { reason: escapeMarkdown(reason) }),
     '',
     t(userLang, 'customer.pickAnotherTime'),
   ].join('\n');
   await notifyUser(booking.userTelegramId, userMessage);
-  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusRejected', { reason }));
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusRejected', { reason: escapeMarkdown(reason) }));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
   return booking;
@@ -71,12 +78,12 @@ export async function rejectBooking(bookingId, reason) {
 // used both by the reminder sweep (jobs/reminders.js, once the slot time has
 // passed) and the admin panel ("mark as completed" action).
 export async function completeBooking(bookingId) {
-  const booking = await Booking.findById(bookingId);
-  if (!booking) return null;
-  if (booking.status !== 'confirmed') return booking;
-
-  booking.status = 'completed';
-  await booking.save();
+  const booking = await Booking.findOneAndUpdate(
+    { _id: bookingId, status: 'confirmed' },
+    { $set: { status: 'completed' } },
+    { new: true }
+  );
+  if (!booking) return Booking.findById(bookingId);
   console.log(`🏁 Booking ${booking._id} marked completed — ${booking.shopName}, ${booking.userName}`);
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusCompleted'));
   emitToShop(booking.shopId, 'appointment:update', booking);
@@ -97,12 +104,12 @@ export async function completeBooking(bookingId) {
 // 'completed' (caught after). No customer notification — they already know
 // they didn't show up.
 export async function markNoShow(bookingId) {
-  const booking = await Booking.findById(bookingId);
-  if (!booking) return null;
-  if (!['confirmed', 'completed'].includes(booking.status)) return booking;
-
-  booking.status = 'no-show';
-  await booking.save();
+  const booking = await Booking.findOneAndUpdate(
+    { _id: bookingId, status: { $in: ['confirmed', 'completed'] } },
+    { $set: { status: 'no-show' } },
+    { new: true }
+  );
+  if (!booking) return Booking.findById(bookingId);
   console.log(`🚫 Booking ${booking._id} marked no-show — ${booking.shopName}, ${booking.userName}`);
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusNoShow'));
   emitToShop(booking.shopId, 'appointment:update', booking);
@@ -116,21 +123,22 @@ export async function markNoShow(bookingId) {
 // change on the shop's end, not something that needs explaining the way a
 // rejection does).
 export async function cancelBooking(bookingId, reason) {
-  const booking = await Booking.findById(bookingId);
-  if (!booking) return null;
-  if (!['pending', 'confirmed'].includes(booking.status)) return booking;
-
-  booking.status = 'cancelled';
-  if (reason) booking.rejectionReason = reason;
-  await booking.save();
+  const update = { status: 'cancelled' };
+  if (reason) update.rejectionReason = reason;
+  const booking = await Booking.findOneAndUpdate(
+    { _id: bookingId, status: { $in: ['pending', 'confirmed'] } },
+    { $set: update },
+    { new: true }
+  );
+  if (!booking) return Booking.findById(bookingId);
   console.log(`🗑️ Booking ${booking._id} cancelled — ${booking.shopName}, ${booking.userName}${reason ? ` (reason: ${reason})` : ''}`);
 
   const userLang = normalizeLanguage(booking.userLanguage);
   const userMessage = [
     t(userLang, 'customer.bookingUpdateTitle'),
     DIVIDER,
-    t(userLang, 'customer.bookingCancelledBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
-    ...(reason ? ['', t(userLang, 'customer.reasonLabel', { reason })] : []),
+    t(userLang, 'customer.bookingCancelledBody', { shopName: escapeMarkdown(booking.shopName), dateTime: formatDateTime(booking.requestedTime, userLang) }),
+    ...(reason ? ['', t(userLang, 'customer.reasonLabel', { reason: escapeMarkdown(reason) })] : []),
   ].join('\n');
   await notifyUser(booking.userTelegramId, userMessage);
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusCancelled'));
@@ -176,7 +184,7 @@ export async function rescheduleBooking(bookingId, newRequestedTime) {
   const userMessage = [
     t(userLang, 'customer.bookingUpdateTitle'),
     DIVIDER,
-    t(userLang, 'customer.bookingRescheduledBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
+    t(userLang, 'customer.bookingRescheduledBody', { shopName: escapeMarkdown(booking.shopName), dateTime: formatDateTime(booking.requestedTime, userLang) }),
   ].join('\n');
   await notifyUser(booking.userTelegramId, userMessage);
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusRescheduled', { dateTime: formatDateTime(booking.requestedTime, normalizeLanguage(booking.ownerLanguage)) }));

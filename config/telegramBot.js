@@ -7,6 +7,7 @@ import Review from '../models/review.js';
 import ServicesModel from '../models/shopData.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage, LANGUAGE_NAMES } from '../utils/botMessages.js';
+import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 
 // A customer's chosen (or web-app-inferred) language, looked up fresh per
 // message so a /language change takes effect immediately — unlike a
@@ -89,7 +90,7 @@ bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
             const shopName = shop.name?.[lang] || shop.name?.en || shop.name?.uz || shop.name?.ru || '';
             return bot.sendMessage(
                 chatId,
-                t(lang, 'customer.qrShopBody', { shopName }),
+                t(lang, 'customer.qrShopBody', { shopName: escapeMarkdown(shopName) }),
                 {
                     parse_mode: 'Markdown',
                     reply_markup: {
@@ -233,9 +234,9 @@ export const sendReminder = async (booking, whenKey) => {
   const message = [
     t(lang, 'customer.reminderTitle'),
     DIVIDER,
-    t(lang, 'customer.reminderBody', { shopName: booking.shopName, whenLabel: t(lang, `customer.${whenKey}`) }),
+    t(lang, 'customer.reminderBody', { shopName: escapeMarkdown(booking.shopName), whenLabel: t(lang, `customer.${whenKey}`) }),
     `🗓 ${formatDateTime(booking.requestedTime, lang)}`,
-    booking.staffName ? t(lang, 'customer.reminderBarber', { staffName: booking.staffName }) : null,
+    booking.staffName ? t(lang, 'customer.reminderBarber', { staffName: escapeMarkdown(booking.staffName) }) : null,
   ].filter(Boolean).join('\n');
   await notifyUser(booking.userTelegramId, message);
 };
@@ -247,7 +248,7 @@ export const sendRatingRequest = async (booking) => {
   const message = [
     t(lang, 'customer.ratingTitle'),
     DIVIDER,
-    t(lang, 'customer.ratingBody', { shopName: booking.shopName }),
+    t(lang, 'customer.ratingBody', { shopName: escapeMarkdown(booking.shopName) }),
   ].join('\n');
   await notifyUser(booking.userTelegramId, message, {
     reply_markup: buildStarKeyboard('rate', booking._id),
@@ -313,7 +314,7 @@ bot.on('callback_query', async (callbackQuery) => {
       });
 
       if (booking.staffId && booking.staffName && !existing?.staffRating) {
-        await bot.sendMessage(message.chat.id, t(lang, 'customer.staffRatingPrompt', { staffName: booking.staffName }), {
+        await bot.sendMessage(message.chat.id, t(lang, 'customer.staffRatingPrompt', { staffName: escapeMarkdown(booking.staffName) }), {
           parse_mode: 'Markdown',
           reply_markup: buildStarKeyboard('staffrate', booking._id),
         });
@@ -341,7 +342,7 @@ bot.on('callback_query', async (callbackQuery) => {
         }
       }
 
-      bot.editMessageText(t(lang, 'customer.staffRatingThanks', { staffName: booking.staffName, stars: '⭐'.repeat(stars) }), {
+      bot.editMessageText(t(lang, 'customer.staffRatingThanks', { staffName: escapeMarkdown(booking.staffName), stars: '⭐'.repeat(stars) }), {
         chat_id: message.chat.id,
         message_id: message.message_id,
         parse_mode: 'Markdown',

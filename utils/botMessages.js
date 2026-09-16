@@ -295,6 +295,17 @@ function getPath(obj, path) {
 }
 
 // t('ru', 'customer.welcome') or t('ru', 'customer.reminderBody', { shopName: 'X', whenLabel: 'tomorrow' })
+//
+// Deliberately does NOT escape `vars` here — some callers (shopControlBot.js's
+// /gencode, /resetowner, /unclaim list messages) build a `{lines}` var that's
+// already a fully-composed multi-line string with its own intentional
+// Markdown (code-span backticks, or shop names already escaped by a nested
+// t() call) — escaping it again here would double-escape or corrupt that
+// on-purpose formatting. Instead, every call site that interpolates a raw
+// user-controlled value (a shop/staff/customer name, a rejection reason)
+// is responsible for wrapping it in escapeMarkdown() itself before it
+// reaches `vars` — see utils/escapeMarkdown.js's own comment for why this
+// matters at all.
 export function t(lang, key, vars = {}) {
   const safeLang = normalizeLanguage(lang);
   let template = getPath(DICTIONARY[safeLang], key);

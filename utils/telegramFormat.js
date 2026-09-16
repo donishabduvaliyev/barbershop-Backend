@@ -2,6 +2,7 @@
 // config/telegramBot.js and shop-owner-facing config/shopControlBot.js) so
 // booking cards/messages never drift between the two.
 import { t, normalizeLanguage } from './botMessages.js';
+import { escapeMarkdown } from './escapeMarkdown.js';
 
 export const DIVIDER = '┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄';
 
@@ -61,22 +62,22 @@ export const formatBookingCard = (booking, statusLine) => {
   // arbitrary numeric user id, so falling back to "@<id>" (as this used to)
   // rendered as dead, unclickable text instead of a working link.
   const telegramContact = booking.userTelegramUsername
-    ? `https://t.me/${booking.userTelegramUsername}`
+    ? `https://t.me/${escapeMarkdown(booking.userTelegramUsername)}`
     : t(lang, 'owner.cardNoTelegramUsername');
   const lines = [
     t(lang, 'owner.cardTitle'),
     DIVIDER,
-    `${t(lang, 'owner.cardShop')} ${booking.shopName}`,
-    `${t(lang, 'owner.cardClient')} ${booking.userName}`,
+    `${t(lang, 'owner.cardShop')} ${escapeMarkdown(booking.shopName)}`,
+    `${t(lang, 'owner.cardClient')} ${escapeMarkdown(booking.userName)}`,
     `${t(lang, 'owner.cardTelegram')} ${telegramContact}`,
-    `${t(lang, 'owner.cardPhone')} ${booking.userNumber}`,
+    `${t(lang, 'owner.cardPhone')} ${escapeMarkdown(booking.userNumber)}`,
     `${t(lang, 'owner.cardTime')} ${formatDateTime(booking.requestedTime, lang)}`,
   ];
   if (booking.serviceName) {
-    lines.push(`${t(lang, 'owner.cardService')} ${booking.serviceName}${booking.price ? ` — ${booking.price}` : ''}`);
+    lines.push(`${t(lang, 'owner.cardService')} ${escapeMarkdown(booking.serviceName)}${booking.price ? ` — ${booking.price}` : ''}`);
   }
   if (booking.staffName) {
-    lines.push(`${t(lang, 'owner.cardBarber')} ${booking.staffName}`);
+    lines.push(`${t(lang, 'owner.cardBarber')} ${escapeMarkdown(booking.staffName)}`);
   }
   if (statusLine) {
     lines.push(DIVIDER, statusLine);
