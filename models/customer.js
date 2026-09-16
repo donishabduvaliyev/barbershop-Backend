@@ -22,6 +22,12 @@ const CustomerSchema = new Schema({
   name: { type: String, required: true },
   number: { type: String, default: '' },
   notes: { type: String, default: '' },
+  // Owner-set — once true, createBooking() refuses any new booking for this
+  // customer at this shop (customer-app or manual alike), until the owner
+  // unblocks them. The only lever this platform has against repeat
+  // no-shows short of a deposit/prepayment system, which needs a payment
+  // gateway decision this isn't.
+  isBlocked: { type: Boolean, default: false },
 }, { timestamps: true });
 
 CustomerSchema.index({ shopId: 1, telegramId: 1 }, { unique: true });

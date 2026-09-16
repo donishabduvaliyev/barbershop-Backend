@@ -56,8 +56,20 @@ router.get('/', async (req, res) => {
       { $sort: { lastVisit: -1 } },
     ]);
 
+    // Separate from the visit aggregate above (which only counts completed
+    // bookings) — a no-show is its own status and needs its own count per
+    // customer, surfaced so an owner can spot a repeat no-show before
+    // confirming their next request.
+    const noShowAgg = await Booking.aggregate([
+      { $match: { shopId: new mongoose.Types.ObjectId(req.shopId), status: 'no-show' } },
+      { $group: { _id: '$userTelegramId', count: { $sum: 1 } } },
+    ]);
+    const noShowCountByTelegramId = new Map(noShowAgg.map((n) => [n._id, n.count]));
+
     const notes = await CustomerNote.find({ shopId: req.shopId }).select('userTelegramId notes');
     const notesByTelegramId = new Map(notes.map((n) => [n.userTelegramId, n.notes]));
+    const customerDocs = await Customer.find({ shopId: req.shopId });
+    const customerDocByTelegramId = new Map(customerDocs.map((d) => [d.telegramId, d]));
 
     const customers = grouped.map((c) => ({
       telegramId: c._id,
@@ -70,6 +82,8 @@ router.get('/', async (req, res) => {
       favoriteServices: topN(c.serviceNames, 3),
       preferredStaff: topN(c.staffNames, 1)[0] || null,
       notes: notesByTelegramId.get(c._id) || '',
+      noShowCount: noShowCountByTelegramId.get(c._id) || 0,
+      isBlocked: !!customerDocByTelegramId.get(c._id)?.isBlocked,
     }));
 
     // A client added via "+ New client" (or one who's only ever had a
@@ -78,7 +92,6 @@ router.get('/', async (req, res) => {
     // isn't already covered, so they still show up (with zero stats)
     // instead of silently disappearing until their first completed visit.
     const coveredIds = new Set(grouped.map((c) => c._id));
-    const customerDocs = await Customer.find({ shopId: req.shopId });
     for (const doc of customerDocs) {
       if (coveredIds.has(doc.telegramId)) continue;
       if (search) {
@@ -96,6 +109,8 @@ router.get('/', async (req, res) => {
         favoriteServices: [],
         preferredStaff: null,
         notes: doc.notes || notesByTelegramId.get(doc.telegramId) || '',
+        noShowCount: noShowCountByTelegramId.get(doc.telegramId) || 0,
+        isBlocked: !!doc.isBlocked,
       });
     }
 
@@ -116,6 +131,7 @@ router.get('/:telegramId', async (req, res) => {
     }
 
     const completed = bookings.filter((b) => b.status === VISITED_STATUS);
+    const noShows = bookings.filter((b) => b.status === 'no-show');
     const note = await CustomerNote.findOne({ shopId: req.shopId, userTelegramId: telegramId });
 
     res.status(200).json({
@@ -129,6 +145,8 @@ router.get('/:telegramId', async (req, res) => {
       favoriteServices: topN(completed.map((b) => b.serviceName), 3),
       preferredStaff: topN(completed.map((b) => b.staffName), 1)[0] || null,
       notes: customerDoc?.notes || note?.notes || '',
+      noShowCount: noShows.length,
+      isBlocked: !!customerDoc?.isBlocked,
       timeline: bookings.map((b) => ({
         id: b._id,
         serviceName: b.serviceName,

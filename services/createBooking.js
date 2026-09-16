@@ -50,6 +50,15 @@ export async function createBooking({
     throw new BookingConflictError('This shop is not currently accepting bookings.');
   }
 
+  // Applies uniformly to a customer-app booking and an owner's own manual
+  // entry alike — if the owner wants to override for a specific walk-in,
+  // unblocking first is the one, explicit way to do that, rather than a
+  // hidden bypass on this one code path.
+  const existingCustomer = await Customer.findOne({ shopId, telegramId: userTelegramId }).select('isBlocked');
+  if (existingCustomer?.isBlocked) {
+    throw new BookingConflictError('This customer is currently blocked from booking at this shop.');
+  }
+
   const requestedTimeDate = new Date(requestedTime);
   const requestedDateKey = toDateKey(requestedTimeDate);
   const isToday = requestedDateKey === toDateKey(new Date());

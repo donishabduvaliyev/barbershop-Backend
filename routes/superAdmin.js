@@ -29,6 +29,8 @@ const toShopSummary = (shop) => ({
   rating: shop.rating,
   reviewsCount: shop.reviewsCount,
   createdAt: shop.createdAt,
+  isPromoted: shop.isPromoted,
+  promotionRank: shop.promotionRank,
 });
 
 // --- Shops: list, create, edit, claim-code, manage-as, delete/restore ---
@@ -113,7 +115,7 @@ router.post('/shops', async (req, res) => {
 // Deliberately restricted to administrative/identity fields — services,
 // staff, pricing and promotions stay the shop owner's own domain, edited
 // only through their own per-shop panel (see plan's "partial control").
-const PARTIAL_CONTROL_FIELDS = ['name', 'category', 'address', 'phone', 'location', 'isOperational'];
+const PARTIAL_CONTROL_FIELDS = ['name', 'category', 'address', 'phone', 'location', 'isOperational', 'isPromoted', 'promotionRank'];
 
 router.patch('/shops/:id', async (req, res) => {
   try {
