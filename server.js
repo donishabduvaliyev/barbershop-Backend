@@ -31,6 +31,7 @@ import superAdminCategoriesRouter from './routes/superAdminCategories.js';
 import trackRouter from './routes/track.js';
 import { startReminderJob } from './jobs/reminders.js';
 import { startWinBackJob } from './jobs/winBack.js';
+import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
 
 dotenv.config();
 
@@ -121,6 +122,7 @@ mongoose.connect(process.env.MONGO_URI, {
         startShopControlBot();
         startReminderJob();
         startWinBackJob();
+        startPendingBookingSweepJob();
     }
     httpServer.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
