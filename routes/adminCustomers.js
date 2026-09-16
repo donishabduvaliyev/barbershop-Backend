@@ -213,6 +213,39 @@ router.patch('/:telegramId', async (req, res) => {
   }
 });
 
+// The one lever against a repeat no-show short of a deposit/prepayment
+// system — createBooking() (services/createBooking.js) checks this flag on
+// every new booking, customer-app or manual alike, and refuses if set.
+router.patch('/:telegramId/block', async (req, res) => {
+  try {
+    const telegramId = Number(req.params.telegramId);
+    const { isBlocked } = req.body;
+    if (typeof isBlocked !== 'boolean') {
+      return res.status(400).json({ message: 'isBlocked (boolean) is required.' });
+    }
+
+    let customer = await Customer.findOne({ shopId: req.shopId, telegramId });
+    if (!customer) {
+      // No Customer doc yet (a "legacy" customer only ever seen via the
+      // booking aggregate) — back-fill name/number from their most recent
+      // booking so this doesn't fail Customer's required `name` field.
+      const lastBooking = await Booking.findOne({ shopId: req.shopId, userTelegramId: telegramId }).sort({ requestedTime: -1 });
+      if (!lastBooking) return res.status(404).json({ message: 'Customer not found.' });
+      customer = await Customer.create({
+        shopId: req.shopId, telegramId,
+        name: lastBooking.userName, number: lastBooking.userNumber,
+      });
+    }
+
+    customer.isBlocked = isBlocked;
+    await customer.save();
+    res.status(200).json({ isBlocked: customer.isBlocked });
+  } catch (error) {
+    console.error('Error updating customer block status:', error);
+    res.status(500).json({ message: 'Server error updating block status.' });
+  }
+});
+
 router.patch('/:telegramId/notes', async (req, res) => {
   try {
     const telegramId = Number(req.params.telegramId);
