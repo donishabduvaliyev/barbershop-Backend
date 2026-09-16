@@ -216,6 +216,7 @@ export const notifyUser = async (chatId, text, extra = {}) => {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
   } catch (err) {
     console.error(`Failed to message Telegram user ${chatId}:`, err.message);
+    captureError(err, { source: 'notifyUser', chatId, text });
   }
 };
 

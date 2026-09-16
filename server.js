@@ -32,17 +32,21 @@ import trackRouter from './routes/track.js';
 import { startReminderJob } from './jobs/reminders.js';
 import { startWinBackJob } from './jobs/winBack.js';
 import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
+import { initErrorTracking, captureError } from './config/errorTracking.js';
 
 dotenv.config();
+initErrorTracking();
 
 // Last-resort safety net: a single failed Telegram API call (e.g. messaging
 // a chat id that was never real, or a user who blocked the bot) must never
 // take the whole server down. Log it and keep serving requests.
 process.on('unhandledRejection', (reason) => {
     console.error('Unhandled promise rejection:', reason);
+    captureError(reason instanceof Error ? reason : new Error(String(reason)), { source: 'unhandledRejection' });
 });
 process.on('uncaughtException', (err) => {
     console.error('Uncaught exception:', err);
+    captureError(err, { source: 'uncaughtException' });
 });
 
 const app = express();
