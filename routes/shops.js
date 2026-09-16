@@ -3,6 +3,8 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
+import SearchCategory from '../models/searchCategory.js';
+import Promotion from '../models/promotion.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 import { isWithinWorkingHours, BookingValidationError } from '../utils/bookingTime.js';
@@ -143,6 +145,69 @@ router.post('/search-shops', async (req, res) => {
 
 
 
+// Resolves one auto-rule category's shops. Each rule mirrors the exact
+// aggregation this endpoint used to run inline before shelves became
+// data-driven (routes/superAdminCategories.js manages the categories
+// themselves; this is the only place their actual membership is computed).
+async function resolveAutoRuleShops(autoRule, baseMatch, userLocation) {
+  const notPromoted = { ...baseMatch, isPromoted: { $ne: true } };
+
+  switch (autoRule) {
+    case 'topRated':
+      return ServicesModel.find(notPromoted).sort({ rating: -1, reviewsCount: -1 }).limit(10);
+
+    case 'bestPrice':
+      return ServicesModel.find(notPromoted).sort({ priceTier: 1, rating: -1 }).limit(10);
+
+    case 'nearYou':
+      if (!userLocation?.coordinates) return null; // omit the shelf entirely, not just empty
+      return ServicesModel.aggregate([
+        {
+          $geoNear: {
+            near: { type: 'Point', coordinates: userLocation.coordinates },
+            distanceField: 'distanceInKm',
+            distanceMultiplier: 0.001,
+            query: notPromoted,
+            spherical: true,
+            limit: 10,
+          },
+        },
+      ]);
+
+    case 'specialOffers': {
+      // Driven entirely by shop owners' own active Promotions — never
+      // manually curated, so this shelf starts/stops itself as discounts
+      // begin and end (see models/promotion.js).
+      const now = new Date();
+      const activeShopIds = await Promotion.distinct('shopId', { validFrom: { $lte: now }, validTo: { $gte: now } });
+      if (activeShopIds.length === 0) return [];
+      return ServicesModel.find({ ...notPromoted, _id: { $in: activeShopIds } }).sort({ rating: -1 }).limit(10);
+    }
+
+    default:
+      return [];
+  }
+}
+
+// Resolves a manual category's ordered shopIds into shops, applying the
+// same operational/archived/category/search filters the auto shelves get —
+// otherwise a curated list would ignore the customer's active filters.
+function filterAndOrderManualShops(shopIds, shopsById, baseMatch) {
+  return shopIds
+    .map((id) => shopsById.get(String(id)))
+    .filter((shop) => {
+      if (!shop) return false;
+      if (!shop.isOperational || shop.isArchived) return false;
+      if (baseMatch.category && shop.category !== baseMatch.category) return false;
+      if (baseMatch.$or) {
+        const term = baseMatch.$or[0]['name.en'].$regex;
+        const re = new RegExp(term, 'i');
+        if (!re.test(shop.name?.en) && !re.test(shop.name?.uz) && !re.test(shop.name?.ru)) return false;
+      }
+      return true;
+    });
+}
+
 router.post('/discovery-search', async (req, res) => {
   try {
     const { searchTerm, category, userLocation } = req.body;
@@ -159,77 +224,31 @@ router.post('/discovery-search', async (req, res) => {
       ];
     }
 
-    const pipeline = [
-      { $match: baseMatch },
-      {
-        $facet: {
+    const advertisedShops = await ServicesModel.find({ ...baseMatch, isPromoted: true })
+      .sort({ promotionRank: 1 })
+      .limit(5);
 
-          advertisedShops: [
-            { $match: { isPromoted: true } },
-            { $sort: { promotionRank: 1 } },
-            { $limit: 5 },
-          ],
+    const shelves = await SearchCategory.find({ isActive: true }).sort({ order: 1, createdAt: 1 });
 
-          editorsChoiceShops: [
-            { $match: { isEditorsChoice: true, isPromoted: { $ne: true } } },
-            { $sort: { rating: -1 } },
-            { $limit: 10 },
-          ],
+    // Every manual shelf's shopIds might overlap — fetch every referenced
+    // shop once rather than once per category.
+    const manualShopIds = shelves.filter((s) => s.type === 'manual').flatMap((s) => s.shopIds);
+    const manualShops = manualShopIds.length
+      ? await ServicesModel.find({ _id: { $in: manualShopIds } })
+      : [];
+    const shopsById = new Map(manualShops.map((s) => [String(s._id), s]));
 
-          topRatedShops: [
-            { $match: { isPromoted: { $ne: true } } },
-            { $sort: { rating: -1, reviewsCount: -1 } },
-            { $limit: 10 },
-          ],
+    const categories = [];
+    for (const shelf of shelves) {
+      const shops = shelf.type === 'manual'
+        ? filterAndOrderManualShops(shelf.shopIds, shopsById, baseMatch)
+        : await resolveAutoRuleShops(shelf.autoRule, baseMatch, userLocation);
 
-
-          bestPriceShops: [
-            { $match: { isPromoted: { $ne: true } } },
-            { $sort: { priceTier: 1, rating: -1 } },
-            { $limit: 10 },
-          ],
-        },
-      },
-
-      {
-        $project: {
-          advertisedShops: '$advertisedShops',
-          editorsChoiceShops: '$editorsChoiceShops',
-          topRatedShops: '$topRatedShops',
-          bestPriceShops: '$bestPriceShops',
-
-        },
-      },
-    ];
-
-
-    let nearYouShops = [];
-    if (userLocation && userLocation.coordinates) {
-      nearYouShops = await ServicesModel.aggregate([
-        {
-          $geoNear: {
-            near: {
-              type: 'Point',
-              coordinates: userLocation.coordinates,
-            },
-            distanceField: 'distanceInKm',
-            distanceMultiplier: 0.001,
-            query: { ...baseMatch, isPromoted: { $ne: true } },
-            spherical: true,
-            limit: 10,
-          },
-        },
-      ]);
+      if (shops === null) continue; // e.g. nearYou with no userLocation yet
+      categories.push({ key: shelf.key, label: shelf.label, icon: shelf.icon, shops });
     }
 
-
-    const results = await ServicesModel.aggregate(pipeline);
-
-
-    const finalResponse = results[0] || {};
-    finalResponse.nearYouShops = nearYouShops;
-
-    res.status(200).json(finalResponse);
+    res.status(200).json({ advertisedShops, categories });
 
   } catch (error) {
     console.error('Error fetching discovery data:', error);

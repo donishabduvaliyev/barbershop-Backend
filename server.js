@@ -27,6 +27,7 @@ import adminStatsRouter from './routes/adminStats.js';
 import adminCustomersRouter from './routes/adminCustomers.js';
 import adminPromotionsRouter from './routes/adminPromotions.js';
 import superAdminRouter from './routes/superAdmin.js';
+import superAdminCategoriesRouter from './routes/superAdminCategories.js';
 import trackRouter from './routes/track.js';
 import { startReminderJob } from './jobs/reminders.js';
 import { startWinBackJob } from './jobs/winBack.js';
@@ -78,6 +79,7 @@ app.use('/api/admin/stats', adminStatsRouter);
 app.use('/api/admin/customers', adminCustomersRouter);
 app.use('/api/admin/promotions', adminPromotionsRouter);
 app.use('/api/superadmin', superAdminRouter);
+app.use('/api/superadmin/categories', superAdminCategoriesRouter);
 app.use('/api/track', trackRouter);
 
 const httpServer = http.createServer(app);
