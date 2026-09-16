@@ -62,16 +62,38 @@ async function runBackup() {
   if (!gotLock) return;
 
   const dateKey = toDateKey(new Date());
+  const counts = {};
+  let failedCollection = null;
 
   for (const { name, model } of COLLECTIONS) {
     try {
       const docs = await model.find({}).lean();
       await uploadBackup(`backups/${dateKey}/${name}.json.gz`, docs);
+      counts[name] = docs.length;
       console.log(`💾 Backed up ${docs.length} ${name} doc(s) → backups/${dateKey}/${name}.json.gz`);
     } catch (err) {
       console.error(`Backup failed for collection "${name}":`, err);
       captureError(err, { source: 'dailyBackup', collection: name });
+      failedCollection = failedCollection || name;
+      // Keep going — a failure on one collection shouldn't also skip
+      // backing up the rest of the day's data.
     }
+  }
+
+  // Without this, a day whose backup partially failed looks identical in
+  // shape to a fully-successful one (same directory, some files present) —
+  // there's no way to tell "backup ran, all good" from "backup ran, three
+  // collections silently failed" without a marker that only gets written
+  // once everything else succeeded.
+  try {
+    await uploadBackup(`backups/${dateKey}/_manifest.json.gz`, {
+      completedAt: new Date().toISOString(),
+      allSucceeded: !failedCollection,
+      counts,
+    });
+  } catch (err) {
+    console.error('Failed to write backup manifest:', err);
+    captureError(err, { source: 'dailyBackup', collection: '_manifest' });
   }
 }
 

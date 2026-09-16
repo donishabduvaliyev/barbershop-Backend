@@ -218,7 +218,12 @@ export const notifyUser = async (chatId, text, extra = {}) => {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
   } catch (err) {
     console.error(`Failed to message Telegram user ${chatId}:`, err.message);
-    captureError(err, { source: 'notifyUser', chatId, text });
+    // Deliberately not forwarding `text` — it's the actual message body,
+    // which can carry a customer's name, phone number, or an owner-typed
+    // rejection reason. `err.message` (from the Telegram API itself, e.g.
+    // "bot was blocked by the user") already says what actually failed
+    // without sending that content to a third-party service.
+    captureError(err, { source: 'notifyUser', chatId });
   }
 };
 

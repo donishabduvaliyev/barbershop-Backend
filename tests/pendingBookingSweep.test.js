@@ -2,12 +2,12 @@
 // forever" — verifies the exact three scenarios manually checked during
 // that fix: a stale booking expires, a fresh one is left alone, and one
 // whose slot time already passed expires immediately regardless of age.
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import mongoose from 'mongoose';
 import { setupTestDb, teardownTestDb, clearTestDb } from './setupDb.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
-import JobLock from '../models/jobLock.js';
+import { runPendingBookingSweep } from '../jobs/pendingBookingSweep.js';
 
 async function makeShop() {
   return ServicesModel.create({
@@ -55,12 +55,7 @@ describe('pending-booking auto-expire sweep', () => {
       requestedTime: new Date(Date.now() - 3600_000), status: 'pending', userLanguage: 'en',
     });
 
-    const { startPendingBookingSweepJob } = await import('../jobs/pendingBookingSweep.js');
-    startPendingBookingSweepJob(); // fires one sweep immediately, un-awaited
-    await vi.waitFor(async () => {
-      const s = await Booking.findById(stale._id);
-      expect(s.status).toBe('rejected');
-    }, { timeout: 5000 });
+    await runPendingBookingSweep();
 
     const staleAfter = await Booking.findById(stale._id);
     const freshAfter = await Booking.findById(fresh._id);
@@ -70,7 +65,5 @@ describe('pending-booking auto-expire sweep', () => {
     expect(staleAfter.rejectionReason).toBe("The shop didn't respond in time");
     expect(freshAfter.status).toBe('pending');
     expect(missedAfter.status).toBe('rejected');
-
-    await JobLock.deleteOne({ _id: 'pendingBookingSweep' });
   }, 15_000);
 });

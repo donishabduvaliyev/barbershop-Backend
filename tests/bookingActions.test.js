@@ -108,3 +108,32 @@ describe('cancelBooking', () => {
     expect(result.status).toBe('completed');
   });
 });
+
+describe('rejectBooking — fromStatuses guard', () => {
+  // Regression test for a real bug: jobs/pendingBookingSweep.js builds its
+  // candidate list from a `status:'pending'` snapshot, then reject-ies each
+  // one with real I/O (Telegram sends) in between. Without restricting
+  // fromStatuses to just ['pending'], the default (broader) guard would let
+  // the sweep silently flip a booking an owner just confirmed back to
+  // rejected, since that default guard also accepts 'confirmed'.
+  it('with fromStatuses: ["pending"], does not touch a booking that is already confirmed', async () => {
+    const shop = await makeShop();
+    const booking = await makePendingBooking(shop);
+    await Booking.updateOne({ _id: booking._id }, { $set: { status: 'confirmed' } });
+
+    const result = await rejectBooking(booking._id, 'auto-expired', { fromStatuses: ['pending'] });
+    expect(result.status).toBe('confirmed'); // unchanged — the whole point of the guard
+
+    const final = await Booking.findById(booking._id);
+    expect(final.status).toBe('confirmed');
+  });
+
+  it('without an explicit fromStatuses, still rejects an already-confirmed booking (existing behavior other callers rely on)', async () => {
+    const shop = await makeShop();
+    const booking = await makePendingBooking(shop);
+    await Booking.updateOne({ _id: booking._id }, { $set: { status: 'confirmed' } });
+
+    const result = await rejectBooking(booking._id, 'staff called in sick');
+    expect(result.status).toBe('rejected');
+  });
+});

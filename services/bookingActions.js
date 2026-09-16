@@ -48,9 +48,21 @@ export async function confirmBooking(bookingId) {
   return booking;
 }
 
-export async function rejectBooking(bookingId, reason) {
+// `fromStatuses` defaults to accepting an already-confirmed booking too —
+// routes/adminShop.js's day-off-conflict cleanup and the owner's own
+// Reject button both legitimately need to reject something already
+// confirmed (staff just got marked off that day; owner changed their
+// mind). jobs/pendingBookingSweep.js is the one caller that must NOT
+// accept 'confirmed' here: it builds its candidate list from a `pending`
+// snapshot, then processes each one with real I/O (Telegram sends) in
+// between — if an owner taps Confirm on that exact booking during that
+// window, the default broad guard would let the sweep silently flip an
+// owner's just-made confirmation back to rejected. Passing
+// fromStatuses:['pending'] makes the sweep's own atomic check re-verify
+// "still actually pending" at the moment it acts, not just when it looked.
+export async function rejectBooking(bookingId, reason, { fromStatuses = ['pending', 'confirmed'] } = {}) {
   const booking = await Booking.findOneAndUpdate(
-    { _id: bookingId, status: { $in: ['pending', 'confirmed'] } },
+    { _id: bookingId, status: { $in: fromStatuses } },
     { $set: { status: 'rejected', rejectionReason: reason } },
     { new: true }
   );

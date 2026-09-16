@@ -35,7 +35,10 @@ async function acquireLock(durationMs) {
   }
 }
 
-async function runPendingBookingSweep() {
+// Exported (not just used internally by startPendingBookingSweepJob) so
+// tests can trigger one sweep directly and repeatedly, without going
+// through the singleton `setInterval` guard below.
+export async function runPendingBookingSweep() {
   const gotLock = await acquireLock(CHECK_INTERVAL_MS);
   if (!gotLock) return;
 
@@ -53,8 +56,16 @@ async function runPendingBookingSweep() {
 
     for (const booking of expired) {
       const reason = t(normalizeLanguage(booking.userLanguage), 'customer.autoExpiredReason');
-      await rejectBooking(booking._id, reason);
-      console.log(`⏱️ Booking ${booking._id} auto-expired — ${booking.shopName}, ${booking.userName} (was pending since ${booking.createdAt.toISOString()})`);
+      // fromStatuses: ['pending'] re-verifies the booking is STILL pending
+      // at the moment of the actual write — the candidate list above is
+      // just a snapshot, and an owner could confirm this exact booking in
+      // the time it takes this loop to reach it (real I/O per iteration).
+      // Without this, the default (broader) guard would let a just-made
+      // confirmation get silently flipped back to rejected.
+      const result = await rejectBooking(booking._id, reason, { fromStatuses: ['pending'] });
+      if (result.status === 'rejected') {
+        console.log(`⏱️ Booking ${booking._id} auto-expired — ${booking.shopName}, ${booking.userName} (was pending since ${booking.createdAt.toISOString()})`);
+      }
     }
   } catch (err) {
     console.error('Pending-booking sweep failed:', err);
