@@ -4,7 +4,7 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -23,5 +23,12 @@
     "node-telegram-bot-api": "^0.66.0",
     "sharp": "^0.35.3",
     "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0",
+    "vitest": "^5.0.1"
+  },
+  "allowScripts": {
+    "mongodb-memory-server@11.2.0": true
   }
 }
