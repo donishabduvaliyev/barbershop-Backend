@@ -13,13 +13,13 @@ import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 const router = express.Router();
 
 
-router.post('/get-user', async (req, res) => {
+// Requires real Telegram auth — this returns the caller's own PII (name,
+// phone, email, favorites), so the id must come from verified initData,
+// never a client-supplied body field (anyone could otherwise dump any
+// user's profile by guessing/iterating Telegram ids).
+router.post('/get-user', requireTelegramAuth, async (req, res) => {
     try {
-        const { id } = req.body;
-
-        if (!id) {
-            return res.status(400).json({ message: 'Telegram ID is required' });
-        }
+        const id = req.telegramUser.id;
 
         const user = await User.findOne({ telegramId: id.toString() });
 
@@ -74,8 +74,14 @@ router.post('/favorites/toggle', requireTelegramAuth, async (req, res) => {
     }
 });
 
-router.get('/favorites/:telegramId', async (req, res) => {
+// Requires real Telegram auth — favorites are personal, same reasoning as
+// POST /favorites/toggle. Only the caller's own favorites are ever
+// returned, regardless of what :telegramId is in the URL.
+router.get('/favorites/:telegramId', requireTelegramAuth, async (req, res) => {
     try {
+        if (Number(req.params.telegramId) !== Number(req.telegramUser.id)) {
+            return res.status(403).json({ message: 'You can only view your own favorites.' });
+        }
         const { telegramId } = req.params;
         const user = await User.findOne({ telegramId }).populate('favorites');
         if (!user) {
@@ -89,8 +95,14 @@ router.get('/favorites/:telegramId', async (req, res) => {
 });
 
 
-router.get('/profile/:telegramId', async (req, res) => {
+// Requires real Telegram auth — this is a full PII dump (name/phone/email
+// plus every booking this person has ever made across every shop), so it
+// must never be reachable for an arbitrary telegramId supplied by the caller.
+router.get('/profile/:telegramId', requireTelegramAuth, async (req, res) => {
     try {
+        if (Number(req.params.telegramId) !== Number(req.telegramUser.id)) {
+            return res.status(403).json({ message: 'You can only view your own profile.' });
+        }
         const { telegramId } = req.params;
 
         const [user, bookings] = await Promise.all([
