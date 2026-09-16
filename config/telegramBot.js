@@ -203,6 +203,14 @@ bot.on('contact', async (msg) => {
 // before auth was enforced — was never a real chat at all). None of that
 // should ever be allowed to crash the bot or block the admin-facing flow.
 export const notifyUser = async (chatId, text, extra = {}) => {
+  // A walk-in customer created through the admin panel's manual-booking
+  // flow (no real Telegram account) is assigned a synthetic NEGATIVE
+  // telegramId — real Telegram chat ids are always positive — precisely so
+  // they can flow through every booking/notification code path unchanged.
+  // This is the one place that needs to know the difference: there's no
+  // real chat to message, so skip the API call rather than log a confusing
+  // "Failed to message Telegram user -1234" for every one of their bookings.
+  if (typeof chatId === 'number' && chatId <= 0) return;
   try {
     await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
   } catch (err) {

@@ -5,7 +5,7 @@ import Booking from '../models/bookingHistory.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
 import { uploadImage, deleteImageByUrl } from '../config/r2.js';
 import { rejectBooking } from '../services/bookingActions.js';
-import { dateKeyToRange } from '../utils/dateKey.js';
+import { dateKeyToRange, toDateKey } from '../utils/dateKey.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
@@ -280,10 +280,11 @@ router.patch('/services/:serviceId', async (req, res) => {
     const service = shop.services.id(req.params.serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found.' });
 
-    const { name, price, durationMinutes } = req.body;
+    const { name, price, durationMinutes, isActive } = req.body;
     if (name !== undefined) service.name = name;
     if (price !== undefined) service.price = price;
     if (durationMinutes !== undefined) service.durationMinutes = durationMinutes;
+    if (isActive !== undefined) service.isActive = isActive;
 
     await shop.save();
     res.status(200).json(shop.services);
@@ -387,6 +388,95 @@ router.delete('/staff/:staffId', async (req, res) => {
   } catch (error) {
     console.error('Error deleting staff member:', error);
     res.status(500).json({ message: 'Server error deleting staff member.' });
+  }
+});
+
+// One-tap "called in sick / stepped out" toggle — deliberately separate
+// from the full staff-edit PATCH above (which is a form submission), and
+// from daysOff (a pre-scheduled whole day off) and workingHours (the
+// recurring weekly schedule). See models/shopData.js's isAvailableNow.
+router.patch('/staff/:staffId/availability', async (req, res) => {
+  try {
+    const { isAvailableNow } = req.body;
+    if (typeof isAvailableNow !== 'boolean') {
+      return res.status(400).json({ message: 'isAvailableNow (boolean) is required.' });
+    }
+
+    const shop = await ServicesModel.findById(req.shopId);
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const staffMember = shop.staff.id(req.params.staffId);
+    if (!staffMember) return res.status(404).json({ message: 'Staff member not found.' });
+
+    staffMember.isAvailableNow = isAvailableNow;
+    await shop.save();
+    res.status(200).json(shop.staff);
+  } catch (error) {
+    console.error('Error updating staff availability:', error);
+    res.status(500).json({ message: 'Server error updating staff availability.' });
+  }
+});
+
+// ---- Calendar / day schedule ----
+
+// One day, every staff member, every booking — no existing endpoint answers
+// this today (routes/shops.js's endpoints all answer "is hour X open for
+// staff Y or any-available", not "show the whole day's grid at once"). The
+// admin calendar page renders this directly: a staff column per staff
+// member (or a single pooled column for staffless shops) and an hour row
+// per shop-hour, using `bookings` to mark cells busy and `daysOff`/
+// `isAvailableNow` to mark a whole column (or just today) unavailable.
+router.get('/schedule', async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'date (YYYY-MM-DD) is required.' });
+    }
+
+    const shop = await ServicesModel.findById(req.shopId).select('staff workingHours capacity');
+    if (!shop) return res.status(404).json({ message: 'Shop not found.' });
+
+    const { start, end } = dateKeyToRange(date);
+    const bookings = await Booking.find({
+      shopId: req.shopId,
+      requestedTime: { $gte: start, $lt: end },
+      status: { $in: [...ACTIVE_STATUSES, 'completed', 'no-show'] },
+    }).sort({ requestedTime: 1 });
+
+    const isToday = date === toDateKey(new Date());
+    const bookingSummary = (b) => ({
+      id: b._id, hour: b.requestedTime.getHours(), status: b.status, source: b.source,
+      userName: b.userName, userNumber: b.userNumber, serviceName: b.serviceName,
+    });
+
+    const staff = (shop.staff || []).map((member) => ({
+      id: member._id,
+      name: member.name,
+      photo: member.photo,
+      isAvailableNow: member.isAvailableNow !== false,
+      isOffToday: member.daysOff?.includes(date) || false,
+      // null means "follows the shop's blanket hours" — the frontend
+      // resolves the same fallback the booking logic itself uses.
+      workingHours: member.workingHours?.length ? member.workingHours : null,
+      bookings: bookings.filter((b) => b.staffId && String(b.staffId) === String(member._id)).map(bookingSummary),
+    }));
+
+    // "Any available" bookings (staffId: null) aren't pinned to a specific
+    // staff column — shown separately so the grid doesn't have to guess
+    // which staff member will actually take them.
+    const unassignedBookings = bookings.filter((b) => !b.staffId).map(bookingSummary);
+
+    res.status(200).json({
+      date,
+      isToday,
+      workingHours: shop.workingHours,
+      capacity: shop.capacity || 1,
+      staff,
+      unassignedBookings,
+    });
+  } catch (error) {
+    console.error('Error building admin schedule:', error);
+    res.status(500).json({ message: 'Server error building schedule.' });
   }
 });
 

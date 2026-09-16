@@ -2,7 +2,9 @@ import express from 'express';
 import mongoose from 'mongoose';
 import Booking from '../models/bookingHistory.js';
 import CustomerNote from '../models/customerNote.js';
+import Customer from '../models/customer.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
+import { generateSyntheticTelegramId } from '../utils/syntheticCustomerId.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
@@ -70,6 +72,33 @@ router.get('/', async (req, res) => {
       notes: notesByTelegramId.get(c._id) || '',
     }));
 
+    // A client added via "+ New client" (or one who's only ever had a
+    // pending/rejected booking, never a completed one) has no entry in the
+    // aggregate above at all — merge in every real Customer record that
+    // isn't already covered, so they still show up (with zero stats)
+    // instead of silently disappearing until their first completed visit.
+    const coveredIds = new Set(grouped.map((c) => c._id));
+    const customerDocs = await Customer.find({ shopId: req.shopId });
+    for (const doc of customerDocs) {
+      if (coveredIds.has(doc.telegramId)) continue;
+      if (search) {
+        const haystack = `${doc.name} ${doc.number}`.toLowerCase();
+        if (!haystack.includes(search.toLowerCase())) continue;
+      }
+      customers.push({
+        telegramId: doc.telegramId,
+        userName: doc.name,
+        userTelegramUsername: '',
+        userNumber: doc.number,
+        visitCount: 0,
+        totalSpent: 0,
+        lastVisit: null,
+        favoriteServices: [],
+        preferredStaff: null,
+        notes: doc.notes || notesByTelegramId.get(doc.telegramId) || '',
+      });
+    }
+
     res.status(200).json({ customers });
   } catch (error) {
     console.error('Error listing customers:', error);
@@ -81,7 +110,8 @@ router.get('/:telegramId', async (req, res) => {
   try {
     const telegramId = Number(req.params.telegramId);
     const bookings = await Booking.find({ shopId: req.shopId, userTelegramId: telegramId }).sort({ requestedTime: -1 });
-    if (bookings.length === 0) {
+    const customerDoc = await Customer.findOne({ shopId: req.shopId, telegramId });
+    if (bookings.length === 0 && !customerDoc) {
       return res.status(404).json({ message: 'Customer not found.' });
     }
 
@@ -90,15 +120,15 @@ router.get('/:telegramId', async (req, res) => {
 
     res.status(200).json({
       telegramId,
-      userName: bookings[0].userName,
-      userTelegramUsername: bookings[0].userTelegramUsername,
-      userNumber: bookings[0].userNumber,
+      userName: customerDoc?.name || bookings[0]?.userName || '',
+      userTelegramUsername: bookings[0]?.userTelegramUsername || '',
+      userNumber: customerDoc?.number || bookings[0]?.userNumber || '',
       visitCount: completed.length,
       totalSpent: completed.reduce((sum, b) => sum + (b.price || 0), 0),
       lastVisit: completed[0]?.requestedTime || null,
       favoriteServices: topN(completed.map((b) => b.serviceName), 3),
       preferredStaff: topN(completed.map((b) => b.staffName), 1)[0] || null,
-      notes: note?.notes || '',
+      notes: customerDoc?.notes || note?.notes || '',
       timeline: bookings.map((b) => ({
         id: b._id,
         serviceName: b.serviceName,
@@ -106,11 +136,62 @@ router.get('/:telegramId', async (req, res) => {
         price: b.price,
         requestedTime: b.requestedTime,
         status: b.status,
+        source: b.source,
       })),
     });
   } catch (error) {
     console.error('Error fetching customer:', error);
     res.status(500).json({ message: 'Server error fetching customer.' });
+  }
+});
+
+// "+ New client" — a walk-in with no prior bookings gets a real Customer
+// record (and a synthetic negative telegramId — see
+// utils/syntheticCustomerId.js) up front, so they exist in the list and can
+// be picked from the manual-booking flow before their first appointment.
+router.post('/', async (req, res) => {
+  try {
+    const { name, number } = req.body;
+    if (!name) return res.status(400).json({ message: 'name is required.' });
+
+    const telegramId = generateSyntheticTelegramId();
+    const customer = await Customer.create({ shopId: req.shopId, telegramId, name, number: number || '' });
+    res.status(201).json({
+      telegramId: customer.telegramId,
+      userName: customer.name,
+      userTelegramUsername: '',
+      userNumber: customer.number,
+      visitCount: 0,
+      totalSpent: 0,
+      lastVisit: null,
+      favoriteServices: [],
+      preferredStaff: null,
+      notes: '',
+    });
+  } catch (error) {
+    console.error('Error creating customer:', error);
+    res.status(500).json({ message: 'Server error creating customer.' });
+  }
+});
+
+// Edits name/number — upserts a Customer record even for a "legacy"
+// customer who only exists via the booking aggregate so far (this is the
+// point they get a real, editable record for the first time).
+router.patch('/:telegramId', async (req, res) => {
+  try {
+    const telegramId = Number(req.params.telegramId);
+    const { name, number } = req.body;
+    if (!name) return res.status(400).json({ message: 'name is required.' });
+
+    const customer = await Customer.findOneAndUpdate(
+      { shopId: req.shopId, telegramId },
+      { $set: { name, number: number || '' } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.status(200).json({ userName: customer.name, userNumber: customer.number });
+  } catch (error) {
+    console.error('Error updating customer:', error);
+    res.status(500).json({ message: 'Server error updating customer.' });
   }
 });
 

@@ -5,9 +5,11 @@ import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
-import { assertBookableTime, isWithinWorkingHours, BookingValidationError } from '../utils/bookingTime.js';
+import { isWithinWorkingHours, BookingValidationError } from '../utils/bookingTime.js';
 import { normalizeLanguage } from '../utils/botMessages.js';
 import { toDateKey } from '../utils/dateKey.js';
+import { createBooking, BookingConflictError, BookingNotFoundError } from '../services/createBooking.js';
+import { emitToShop } from '../config/socket.js';
 
 const router = express.Router();
 
@@ -239,27 +241,6 @@ router.post('/discovery-search', async (req, res) => {
 // rejected/cancelled/completed ones never block anything.
 const ACTIVE_STATUSES = ['pending', 'confirmed'];
 
-// Atomically claims one "any available" slot for a staffless (or
-// no-staff-requested) booking, the same way the staffId unique index does
-// for a specific barber. Tries virtualSlot 0, 1, 2… up to capacity - 1,
-// relying on the partial unique index on {shopId, requestedTime,
-// virtualSlot} to reject a slot number another concurrent request just
-// took — so two requests racing for the last opening can't both succeed,
-// unlike a plain "count bookings, then insert" check.
-async function claimVirtualSlot(bookingDoc, capacity) {
-  for (let slot = 0; slot < capacity; slot++) {
-    bookingDoc.virtualSlot = slot;
-    try {
-      await bookingDoc.save();
-      return true;
-    } catch (err) {
-      if (err.code !== 11000) throw err;
-      bookingDoc.isNew = true; // retry the same in-memory doc with the next slot
-    }
-  }
-  return false;
-}
-
 router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async (req, res) => {
   try {
     const { shopId, shopName, requestedTime, userNumber, userTelegramNumber, userName, staffId, serviceId, lang } = req.body;
@@ -274,88 +255,6 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       return res.status(400).json({ message: 'Missing required information.' });
     }
 
-    const shop = await ServicesModel.findById(shopId).select('staff services workingHours isOperational capacity');
-    if (!shop) {
-      return res.status(404).json({ message: 'Shop not found.' });
-    }
-    if (!shop.isOperational) {
-      return res.status(409).json({ message: 'This shop is not currently accepting bookings.' });
-    }
-
-    const requestedTimeDate = new Date(requestedTime);
-    const requestedDateKey = toDateKey(requestedTimeDate);
-
-    // A staffId/serviceId is only ever honored if it actually belongs to
-    // this shop — never trust client-supplied name/price alongside it.
-    // Resolved before the working-hours check below, since a specific
-    // staff member's own hours (if they have any set) take precedence over
-    // the shop's blanket hours.
-    let resolvedStaffMember = null;
-    if (staffId) {
-      const staffMember = shop.staff?.id(staffId);
-      if (staffMember) {
-        if (staffMember.daysOff?.includes(requestedDateKey)) {
-          return res.status(400).json({ message: `${staffMember.name} is off that day — please pick another date or barber.` });
-        }
-        resolvedStaffMember = staffMember;
-      }
-    }
-    const resolvedStaffId = resolvedStaffMember?._id || null;
-    const resolvedStaffName = resolvedStaffMember?.name || '';
-
-    const effectiveWorkingHours = resolvedStaffMember?.workingHours?.length
-      ? resolvedStaffMember.workingHours
-      : shop.workingHours;
-    try {
-      assertBookableTime(effectiveWorkingHours, requestedTimeDate, resolvedStaffName || 'This shop');
-    } catch (err) {
-      if (err instanceof BookingValidationError) {
-        return res.status(400).json({ message: err.message });
-      }
-      throw err;
-    }
-
-    // A customer can't be in two places at once — this catches the honest
-    // "forgot I already booked" case (and the Rebook shortcut making it
-    // easy to do by accident). App-level check is fine here since it's a
-    // courtesy guard against the customer's own past bookings, not a
-    // shared-resource integrity constraint like the barber/slot ones below.
-    const selfConflict = await Booking.exists({
-      userTelegramId, requestedTime: requestedTimeDate, status: { $in: ACTIVE_STATUSES },
-    });
-    if (selfConflict) {
-      console.log(`⏭️ Booking blocked (self-conflict) — user ${userTelegramId} @ ${requestedTimeDate.toISOString()}`);
-      return res.status(409).json({ message: 'You already have another appointment booked at this time.' });
-    }
-
-    // serviceId is optional for now — clients running an older build don't
-    // send one yet. When present it must be real; when absent we just skip
-    // attaching service/price info instead of failing the whole booking.
-    let resolvedService = null;
-    if (serviceId) {
-      resolvedService = shop.services?.id(serviceId);
-      if (!resolvedService) {
-        return res.status(400).json({ message: 'Selected service is no longer available.' });
-      }
-    }
-
-    // A staff member restricted to specific services (serviceIds non-empty)
-    // can't be booked for anything outside that list — same "don't just
-    // trust the UI filtered it" reasoning as the days-off check above.
-    if (resolvedStaffMember && resolvedService && resolvedStaffMember.serviceIds?.length > 0) {
-      const performsIt = resolvedStaffMember.serviceIds.some((id) => id.toString() === resolvedService._id.toString());
-      if (!performsIt) {
-        return res.status(400).json({ message: `${resolvedStaffMember.name} doesn't offer this service — please pick another barber or service.` });
-      }
-    }
-
-    // Snapshot the name in whichever language the customer was actually
-    // using, instead of always defaulting to English regardless of locale —
-    // falls back to English only if that language variant is missing.
-    const serviceName = resolvedService
-      ? (resolvedService.name?.[lang] || resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '')
-      : '';
-
     const userLanguage = normalizeLanguage(lang);
 
     // Only backfills — an explicit /language choice in the customer bot
@@ -368,66 +267,15 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
       ).catch((err) => console.error('Failed to backfill user language:', err));
     }
 
-    const baseFields = {
-      shopId,
-      shopName,
-      userTelegramId,
-      userTelegramUsername,
-      requestedTime: requestedTimeDate,
-      userNumber,
-      userTelegramNumber,
-      userName,
-      serviceId: resolvedService?._id || null,
-      serviceName,
-      price: resolvedService?.price ?? null,
-      status: 'pending',
-      userLanguage,
-    };
+    const newBookingRequest = await createBooking({
+      shopId, shopName, requestedTime, staffId, serviceId,
+      userTelegramId, userTelegramUsername, userNumber, userTelegramNumber, userName,
+      userLanguage, source: 'bot',
+    });
 
-    let newBookingRequest;
+    console.log(`📥 New booking ${newBookingRequest._id} — ${shopName}, ${userName} @ ${new Date(requestedTime).toISOString()}${newBookingRequest.staffName ? ` with ${newBookingRequest.staffName}` : ''}${newBookingRequest.serviceName ? ` (${newBookingRequest.serviceName})` : ''}`);
 
-    if (resolvedStaffId) {
-      // A specific barber was requested — the partial unique index on
-      // {shopId, staffId, requestedTime} is what actually prevents two
-      // people booking the same barber/slot at once; this save() either
-      // succeeds outright or fails with a duplicate-key error we turn into
-      // a clean response below.
-      newBookingRequest = new Booking({ ...baseFields, staffId: resolvedStaffId, staffName: resolvedStaffName });
-      try {
-        await newBookingRequest.save();
-      } catch (err) {
-        if (err.code === 11000) {
-          return res.status(409).json({ message: 'That barber was just booked for this time — please pick another slot.' });
-        }
-        throw err;
-      }
-    } else {
-      // "Any available" — capacity is however many staff are named, not off
-      // that day, and (if a service was picked) actually perform it — or
-      // the shop's plain capacity number for shops that don't track
-      // individual staff. claimVirtualSlot races safely against concurrent
-      // requests for the same shop/hour via its own unique index.
-      const qualifiedStaff = (shop.staff || []).filter((s) => {
-        if (s.daysOff?.includes(requestedDateKey)) return false;
-        if (resolvedService && s.serviceIds?.length > 0) {
-          return s.serviceIds.some((id) => id.toString() === resolvedService._id.toString());
-        }
-        return true;
-      });
-      const capacity = shop.staff?.length > 0 ? qualifiedStaff.length : (shop.capacity || 1);
-      if (capacity === 0) {
-        console.log(`⏭️ Booking blocked (no qualified staff) — shop ${shopId} @ ${requestedTimeDate.toISOString()}`);
-        return res.status(409).json({ message: 'No staff can perform this on that date — please pick another date or service.' });
-      }
-      newBookingRequest = new Booking({ ...baseFields, staffId: null, staffName: '' });
-      const claimed = await claimVirtualSlot(newBookingRequest, capacity);
-      if (!claimed) {
-        console.log(`⏭️ Booking blocked (fully booked) — shop ${shopId} @ ${requestedTimeDate.toISOString()}`);
-        return res.status(409).json({ message: 'This time slot is fully booked — please pick another.' });
-      }
-    }
-
-    console.log(`📥 New booking ${newBookingRequest._id} — ${shopName}, ${userName} @ ${requestedTimeDate.toISOString()}${resolvedStaffName ? ` with ${resolvedStaffName}` : ''}${serviceName ? ` (${serviceName})` : ''}`);
+    emitToShop(shopId, 'appointment:update', newBookingRequest);
 
     // The booking is already saved at this point — a failure to notify the
     // shop owner shouldn't make the client think their request wasn't received.
@@ -442,6 +290,15 @@ router.post('/booking-requests', requireTelegramAuth, bookingRateLimiter, async 
     });
 
   } catch (error) {
+    if (error instanceof BookingValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error instanceof BookingConflictError) {
+      return res.status(409).json({ message: error.message });
+    }
+    if (error instanceof BookingNotFoundError) {
+      return res.status(404).json({ message: error.message });
+    }
     console.error('Error creating booking request:', error);
     res.status(500).json({ message: 'Server error while creating booking request.' });
   }

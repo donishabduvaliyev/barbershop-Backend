@@ -3,11 +3,15 @@
 // inline-button callbacks and the admin panel's REST endpoints, so the two
 // entry points can never drift out of sync.
 import Booking from '../models/bookingHistory.js';
+import ServicesModel from '../models/shopData.js';
 import { notifyUser, sendRatingRequest } from '../config/telegramBot.js';
 import { editBookingCard } from '../config/notificationBridge.js';
 import { emitToShop } from '../config/socket.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
+import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
+import { toDateKey } from '../utils/dateKey.js';
+import { BookingConflictError } from './createBooking.js';
 
 // A booking that's already left the 'pending' state has already been acted
 // on once (by the bot or the panel) — treat re-triggering as a no-op rather
@@ -101,6 +105,81 @@ export async function markNoShow(bookingId) {
   await booking.save();
   console.log(`🚫 Booking ${booking._id} marked no-show — ${booking.shopName}, ${booking.userName}`);
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusNoShow'));
+  emitToShop(booking.shopId, 'appointment:update', booking);
+
+  return booking;
+}
+
+// Distinct from rejectBooking: reject is for the pending stage ("we
+// couldn't confirm this"); cancel is the owner calling off something
+// already confirmed. Reason is optional here (often just a scheduling
+// change on the shop's end, not something that needs explaining the way a
+// rejection does).
+export async function cancelBooking(bookingId, reason) {
+  const booking = await Booking.findById(bookingId);
+  if (!booking) return null;
+  if (!['pending', 'confirmed'].includes(booking.status)) return booking;
+
+  booking.status = 'cancelled';
+  if (reason) booking.rejectionReason = reason;
+  await booking.save();
+  console.log(`🗑️ Booking ${booking._id} cancelled — ${booking.shopName}, ${booking.userName}${reason ? ` (reason: ${reason})` : ''}`);
+
+  const userLang = normalizeLanguage(booking.userLanguage);
+  const userMessage = [
+    t(userLang, 'customer.bookingUpdateTitle'),
+    DIVIDER,
+    t(userLang, 'customer.bookingCancelledBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
+    ...(reason ? ['', t(userLang, 'customer.reasonLabel', { reason })] : []),
+  ].join('\n');
+  await notifyUser(booking.userTelegramId, userMessage);
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusCancelled'));
+  emitToShop(booking.shopId, 'appointment:update', booking);
+
+  return booking;
+}
+
+// Reschedule keeps the same customer/staff/service, just moves the time —
+// reruns the same working-hours/days-off/conflict checks a fresh booking
+// would for that staff member (or shop, if staffless), via the shared
+// utils/bookingTime.js validator, so a rescheduled slot can never end up
+// less valid than a newly-created one would be. Throws
+// BookingValidationError/BookingConflictError the same way createBooking
+// does — the route maps those to 400/409.
+export async function rescheduleBooking(bookingId, newRequestedTime) {
+  const booking = await Booking.findById(bookingId);
+  if (!booking) return null;
+
+  const shop = await ServicesModel.findById(booking.shopId).select('staff workingHours');
+  const staffMember = booking.staffId ? shop?.staff?.id(booking.staffId) : null;
+  const newDateKey = toDateKey(newRequestedTime);
+
+  if (staffMember?.daysOff?.includes(newDateKey)) {
+    throw new BookingValidationError(`${staffMember.name} is off that day — please pick another date.`);
+  }
+  const effectiveWorkingHours = staffMember?.workingHours?.length ? staffMember.workingHours : shop?.workingHours;
+  assertBookableTime(effectiveWorkingHours, newRequestedTime, staffMember?.name || booking.shopName || 'This shop');
+
+  const oldTime = booking.requestedTime;
+  booking.requestedTime = newRequestedTime;
+  try {
+    await booking.save();
+  } catch (err) {
+    if (err.code === 11000) {
+      throw new BookingConflictError('That time is already taken — please pick another slot.');
+    }
+    throw err;
+  }
+  console.log(`🔁 Booking ${booking._id} rescheduled — ${booking.shopName}, ${booking.userName} from ${oldTime.toISOString()} to ${newRequestedTime.toISOString()}`);
+
+  const userLang = normalizeLanguage(booking.userLanguage);
+  const userMessage = [
+    t(userLang, 'customer.bookingUpdateTitle'),
+    DIVIDER,
+    t(userLang, 'customer.bookingRescheduledBody', { shopName: booking.shopName, dateTime: formatDateTime(booking.requestedTime, userLang) }),
+  ].join('\n');
+  await notifyUser(booking.userTelegramId, userMessage);
+  await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusRescheduled', { dateTime: formatDateTime(booking.requestedTime, normalizeLanguage(booking.ownerLanguage)) }));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
   return booking;
