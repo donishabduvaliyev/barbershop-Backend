@@ -161,6 +161,9 @@ async function resolveAutoRuleShops(autoRule, baseMatch, userLocation) {
 
     case 'nearYou':
       if (!userLocation?.coordinates) return null; // omit the shelf entirely, not just empty
+      // This MongoDB version rejects $geoNear's own `limit` option ("no
+      // longer supports the 'limit' parameter") — a separate $limit stage
+      // is required instead.
       return ServicesModel.aggregate([
         {
           $geoNear: {
@@ -169,9 +172,9 @@ async function resolveAutoRuleShops(autoRule, baseMatch, userLocation) {
             distanceMultiplier: 0.001,
             query: notPromoted,
             spherical: true,
-            limit: 10,
           },
         },
+        { $limit: 10 },
       ]);
 
     case 'specialOffers': {
