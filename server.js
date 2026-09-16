@@ -32,6 +32,7 @@ import trackRouter from './routes/track.js';
 import { startReminderJob } from './jobs/reminders.js';
 import { startWinBackJob } from './jobs/winBack.js';
 import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
+import { startBackupJob } from './jobs/backup.js';
 import { initErrorTracking, captureError } from './config/errorTracking.js';
 
 dotenv.config();
@@ -127,6 +128,7 @@ mongoose.connect(process.env.MONGO_URI, {
         startReminderJob();
         startWinBackJob();
         startPendingBookingSweepJob();
+        startBackupJob();
     }
     httpServer.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);

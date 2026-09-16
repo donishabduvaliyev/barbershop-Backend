@@ -8,6 +8,7 @@ import ServicesModel from '../models/shopData.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage, LANGUAGE_NAMES } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
+import { captureError } from './errorTracking.js';
 
 // A customer's chosen (or web-app-inferred) language, looked up fresh per
 // message so a /language change takes effect immediately — unlike a
@@ -53,6 +54,7 @@ export const startBot = () => {
 // customer's side.
 bot.on('polling_error', (err) => {
   console.error('❌ Customer bot polling error:', err.message);
+  captureError(err, { source: 'customerBot.polling_error' });
 });
 
 export const webAppUrl = 'https://barbershop-telegram-bot.netlify.app';

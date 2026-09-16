@@ -16,6 +16,7 @@ import { DIVIDER, formatBookingCard } from '../utils/telegramFormat.js';
 import { notifyUser as notifyCustomerBotUser } from './telegramBot.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
+import { captureError } from './errorTracking.js';
 
 // Looked up fresh per command reply so a /language change takes effect
 // immediately — unlike a booking card's snapshotted ownerLanguage, there's
@@ -55,6 +56,7 @@ export const startShopControlBot = () => {
 
 shopControlBot.on('polling_error', (err) => {
   console.error('❌ Shop-control bot polling error:', err.message);
+  captureError(err, { source: 'shopControlBot.polling_error' });
 });
 
 const dashboardKeyboard = {
