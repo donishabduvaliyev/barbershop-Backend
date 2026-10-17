@@ -5,6 +5,9 @@ import User from '../models/userdata.js';
 import Booking from '../models/bookingHistory.js';
 import Review from '../models/review.js';
 import ServicesModel from '../models/shopData.js';
+import MobileAuthSession from '../models/mobileAuthSession.js';
+import { signMobileCustomerToken } from '../middleware/telegramAuth.js';
+import { emitToAuthSession, emitToUser } from './socket.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage, LANGUAGE_NAMES } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
@@ -84,6 +87,90 @@ export async function getBotUsername() {
 bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const lang = await getUserLanguage(msg.from.id);
+
+    // 1. Mobile App Telegram Deep-Link Auth (`/start login_<32-hex-token>`)
+    const loginMatch = match?.[1]?.match(/^login_([a-f0-9]{32})$/);
+    if (loginMatch) {
+        const sessionToken = loginMatch[1];
+        try {
+            const session = await MobileAuthSession.findOne({ sessionToken, status: 'pending' });
+            if (!session) {
+                return bot.sendMessage(chatId, t(lang, 'customer.mobileLoginExpired'), { parse_mode: 'Markdown' });
+            }
+
+            const telegramIdStr = String(msg.from.id);
+            const fullName = `${msg.from.first_name || ''} ${msg.from.last_name || ''}`.trim();
+            const username = msg.from.username || '';
+
+            let avatarUrl = '';
+            try {
+                const photos = await bot.getUserProfilePhotos(msg.from.id, { limit: 1 });
+                if (photos && photos.total_count > 0) {
+                    const fileId = photos.photos[0][0].file_id;
+                    avatarUrl = await bot.getFileLink(fileId);
+                }
+            } catch {
+                // Non-fatal if profile photo fetch fails
+            }
+
+            const updateFields = {
+                name: fullName,
+                username,
+                lastPlatform: 'mobile',
+            };
+            if (avatarUrl) updateFields.avatar = avatarUrl;
+
+            const user = await User.findOneAndUpdate(
+                { telegramId: telegramIdStr },
+                { $set: updateFields },
+                { new: true, upsert: true }
+            );
+
+            session.status = 'authenticated';
+            session.telegramId = telegramIdStr;
+            await session.save();
+
+            const jwtToken = signMobileCustomerToken({
+                telegramId: msg.from.id,
+                username: user.username,
+                name: user.name,
+            });
+
+            // Push real-time login completion to the waiting React Native app
+            emitToAuthSession(sessionToken, 'auth:approved', {
+                status: 'authenticated',
+                token: jwtToken,
+                user: {
+                    telegramId: user.telegramId,
+                    name: user.name,
+                    username: user.username,
+                    phone: user.phone || '',
+                    email: user.email || '',
+                    avatar: user.avatar || '',
+                    favorites: user.favorites || [],
+                    language: user.language || lang,
+                },
+            });
+
+            if (user.phone) {
+                return bot.sendMessage(chatId, t(lang, 'customer.mobileLoginSuccess'), {
+                    parse_mode: 'Markdown',
+                });
+            }
+
+            return bot.sendMessage(chatId, t(lang, 'customer.mobileLoginAskPhone'), {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    keyboard: [[{ text: t(lang, 'customer.sendPhoneButton'), request_contact: true }]],
+                    resize_keyboard: true,
+                    one_time_keyboard: true,
+                },
+            });
+        } catch (err) {
+            console.error('Error handling mobile Telegram login:', err);
+            return bot.sendMessage(chatId, t(lang, 'customer.registrationError'));
+        }
+    }
 
     const shopMatch = match?.[1]?.match(/^shop_([a-f0-9]{24})$/);
     if (shopMatch) {
@@ -167,18 +254,23 @@ bot.on('contact', async (msg) => {
 
     try {
         console.log("Attempting to find user in DB..."); // <-- LOG 4
-        let user = await User.findOne({ telegramId: userData.telegramId });
+        const savedUser = await User.findOneAndUpdate(
+            { telegramId: userData.telegramId },
+            { $set: userData },
+            { new: true, upsert: true }
+        );
 
-        if (user) {
-            console.log("User found. Attempting to update..."); // <-- LOG 5
-            await User.updateOne({ telegramId: userData.telegramId }, { $set: userData });
-            console.log("User updated successfully in DB."); // <-- LOG 6
-        } else {
-            console.log("User not found. Attempting to create new user..."); // <-- LOG 7
-            const newUser = new User(userData);
-            await newUser.save();
-            console.log("New user saved successfully in DB."); // <-- LOG 8
-        }
+        // Emit live update so both Web and Mobile apps immediately receive the user's phone & avatar
+        emitToUser(userData.telegramId, 'user:updated', {
+            telegramId: savedUser.telegramId,
+            name: savedUser.name,
+            username: savedUser.username,
+            phone: savedUser.phone,
+            email: savedUser.email,
+            avatar: savedUser.avatar,
+            favorites: savedUser.favorites || [],
+            language: savedUser.language,
+        });
 
         const lang = await getUserLanguage(msg.from.id);
         bot.sendMessage(

@@ -45,6 +45,9 @@ const DICTIONARY = {
       promoBody: 'Enjoy *{discount}% off* at *{shopName}* through {date}.',
       languagePrompt: '🌐 Choose your language:',
       languageSet: '✅ Language set to English.',
+      mobileLoginSuccess: '✅ *Signed in to SmartChair Mobile!*\n\nYou can now return to the mobile app — your account is connected.',
+      mobileLoginAskPhone: '✅ *Signed in to SmartChair Mobile!*\n\nTap the button below to also share your phone number for faster bookings, then return to the app:',
+      mobileLoginExpired: '⚠️ This mobile login link has expired or was already used. Please tap *Sign in with Telegram* in the app again.',
     },
     owner: {
       openDashboardButton: '🔐 Open Dashboard',
@@ -138,6 +141,9 @@ const DICTIONARY = {
       promoBody: 'Скидка *{discount}%* в *{shopName}* действует до {date}.',
       languagePrompt: '🌐 Выберите язык:',
       languageSet: '✅ Язык изменён на русский.',
+      mobileLoginSuccess: '✅ *Вход в приложение SmartChair выполнен!*\n\nТеперь вы можете вернуться в мобильное приложение — ваш аккаунт подключён.',
+      mobileLoginAskPhone: '✅ *Вход в приложение SmartChair выполнен!*\n\nНажмите кнопку ниже, чтобы также поделиться номером телефона для быстрой записи, затем вернитесь в приложение:',
+      mobileLoginExpired: '⚠️ Ссылка для входа устарела или уже была использована. Пожалуйста, нажмите *Войти через Telegram* в приложении ещё раз.',
     },
     owner: {
       openDashboardButton: '🔐 Открыть панель',
@@ -231,6 +237,9 @@ const DICTIONARY = {
       promoBody: "*{shopName}*da *{discount}% chegirma* {date} gacha amal qiladi.",
       languagePrompt: '🌐 Tilni tanlang:',
       languageSet: "✅ Til o'zbekchaga o'zgartirildi.",
+      mobileLoginSuccess: "✅ *SmartChair mobil ilovasiga kirdingiz!*\n\nEndi mobil ilovaga qaytishingiz mumkin — hisobingiz ulandi.",
+      mobileLoginAskPhone: "✅ *SmartChair mobil ilovasiga kirdingiz!*\n\nTezroq band qilish uchun quyidagi tugma orqali telefon raqamingizni ham ulashing, so'ngra ilovaga qayting:",
+      mobileLoginExpired: "⚠️ Kirish havolasi muddati tugagan yoki allaqachon ishlatilgan. Iltimos, ilovada *Telegram orqali kirish* tugmasini qaytadan bosing.",
     },
     owner: {
       openDashboardButton: '🔐 Boshqaruv panelini ochish',

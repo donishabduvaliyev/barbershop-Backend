@@ -7,11 +7,48 @@ export function setIO(io) {
   ioInstance = io;
 }
 
-// Every admin-panel client joins a room named `shop:<shopId>` on connect
-// (see the io.use auth middleware in server.js) — this is the only place a
-// shop's live events go, so one shop's browser tab never sees another
-// shop's data.
+export function getIO() {
+  return ioInstance;
+}
+
+// Emits a live event to a specific customer across all their connected
+// devices (both Telegram Web Mini App and React Native Mobile App).
+export function emitToUser(telegramId, event, payload) {
+  if (!ioInstance || !telegramId) return;
+  ioInstance.to(`user:${telegramId}`).emit(event, payload);
+}
+
+// Emits a live event to a pending mobile authentication handshake room
+// (`auth:<sessionToken>`) when the user confirms login inside Telegram.
+export function emitToAuthSession(sessionToken, event, payload) {
+  if (!ioInstance || !sessionToken) return;
+  ioInstance.to(`auth:${sessionToken}`).emit(event, payload);
+}
+
+// Every admin-panel client joins `shop:<shopId>`.
+// In addition, whenever a booking (`appointment:update`) is emitted for a
+// shop, we automatically fan out:
+// 1. `booking:updated` to `user:<userTelegramId>` so the customer's Web &
+//    Mobile apps update booking status live on screen.
+// 2. `availability:updated` to `public:shop:<shopId>` so any Web or Mobile
+//    user currently picking a time slot at this shop sees availability
+//    update in real time.
 export function emitToShop(shopId, event, payload) {
   if (!ioInstance || !shopId) return;
-  ioInstance.to(`shop:${shopId}`).emit(event, payload);
+  const normalizedShopId = shopId?._id ? String(shopId._id) : String(shopId);
+  ioInstance.to(`shop:${normalizedShopId}`).emit(event, payload);
+
+  if (event === 'appointment:update' && payload) {
+    if (payload.userTelegramId) {
+      ioInstance.to(`user:${payload.userTelegramId}`).emit('booking:updated', payload);
+    }
+    ioInstance.to(`public:shop:${normalizedShopId}`).emit('availability:updated', {
+      shopId: normalizedShopId,
+      bookingId: payload._id,
+      requestedTime: payload.requestedTime,
+      status: payload.status,
+      staffId: payload.staffId || null,
+    });
+  }
 }
+

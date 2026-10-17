@@ -1,4 +1,46 @@
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+
+const MOBILE_TOKEN_TTL = '30d';
+
+function getJwtSecret() {
+  return process.env.JWT_SECRET || process.env.TELEGRAM_BOT_TOKEN || 'tezkor-mobile-secret';
+}
+
+// Signs a long-lived JWT for the React Native (Android/iOS) mobile app
+// after the customer authenticates via Telegram Bot Deep-Link or InitData.
+export function signMobileCustomerToken({ telegramId, username = '', name = '' }) {
+  return jwt.sign(
+    {
+      role: 'customer',
+      platform: 'mobile',
+      telegramId: Number(telegramId),
+      username,
+      name,
+    },
+    getJwtSecret(),
+    { expiresIn: MOBILE_TOKEN_TTL }
+  );
+}
+
+// Verifies a mobile customer JWT and returns the normalized user payload,
+// or null if invalid/expired or not a customer token.
+export function verifyMobileCustomerToken(token) {
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, getJwtSecret());
+    if (!payload || payload.role !== 'customer' || !payload.telegramId) {
+      return null;
+    }
+    return {
+      id: Number(payload.telegramId),
+      username: payload.username || '',
+      first_name: payload.name || '',
+    };
+  } catch {
+    return null;
+  }
+}
 
 // Verifies Telegram WebApp initData per Telegram's documented algorithm:
 // https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
@@ -34,17 +76,36 @@ export function verifyTelegramInitData(initData, botToken) {
   }
 }
 
-// Express middleware: rejects any request that isn't provably from inside
-// Telegram, and attaches the verified user to req.telegramUser so routes
-// never have to trust a client-supplied telegram id.
+// Smart Dual-Platform Auth Middleware:
+// Automatically detects whether the request comes from:
+// 1. Web (Telegram Mini App) via HMAC-signed `initData` / `x-telegram-init-data`
+// 2. Mobile (React Native Android/iOS) via `Authorization: Bearer <jwt>` or `x-mobile-token`
+// Attaches `req.telegramUser` and `req.clientPlatform` ('web' | 'mobile').
 export function requireTelegramAuth(req, res, next) {
+  // 1. Check Web Mini App initData first
   const initData = req.body?.initData || req.headers['x-telegram-init-data'];
-  const user = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN);
-
-  if (!user) {
-    return res.status(401).json({ message: 'Please open this app from Telegram to continue.' });
+  if (initData) {
+    const user = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN);
+    if (user) {
+      req.telegramUser = user;
+      req.clientPlatform = 'web';
+      return next();
+    }
   }
 
-  req.telegramUser = user;
-  next();
+  // 2. Check Mobile App Bearer JWT token
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const mobileToken = bearerToken || req.headers['x-mobile-token'];
+  if (mobileToken) {
+    const mobileUser = verifyMobileCustomerToken(mobileToken);
+    if (mobileUser) {
+      req.telegramUser = mobileUser;
+      req.clientPlatform = 'mobile';
+      return next();
+    }
+  }
+
+  return res.status(401).json({ message: 'Please log in with Telegram to continue.' });
 }
+
