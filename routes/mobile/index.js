@@ -18,6 +18,11 @@ import userRouter from '../userData.js';
 
 const router = express.Router();
 
+router.use((req, _res, next) => {
+  req.clientPlatform = 'mobile';
+  next();
+});
+
 // ---------------------------------------------------------------------------
 // 1. TELEGRAM BOT DEEP-LINK AUTH FOR 3RD-PARTY MOBILE APP (ANDROID & iOS)
 // ---------------------------------------------------------------------------
