@@ -72,6 +72,7 @@ let emittedEvents = [];
 beforeAll(async () => {
   process.env.TELEGRAM_BOT_TOKEN = TEST_BOT_TOKEN;
   process.env.TELEGRAM_BOT_USERNAME = 'TestSmartChairBot';
+  process.env.TELEGRAM_ADMIN_CHAT_ID = '';
   process.env.JWT_SECRET = 'test-mobile-jwt-secret';
 
   await setupTestDb();
