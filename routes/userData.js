@@ -1,4 +1,3 @@
-
 import express from 'express';
 import User from '../models/userdata.js';
 import ServicesModel from '../models/shopData.js';
@@ -6,7 +5,7 @@ import Booking from '../models/bookingHistory.js';
 import Review from '../models/review.js';
 import shopControlBot from '../config/shopControlBot.js';
 import { editBookingCard } from '../config/notificationBridge.js';
-import { emitToShop } from '../config/socket.js';
+import { emitToShop, emitToUser } from '../config/socket.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 
@@ -67,6 +66,12 @@ router.post('/favorites/toggle', requireTelegramAuth, async (req, res) => {
             user.favorites.push(shopId);
         }
         await user.save();
+
+        emitToUser(telegramId, 'favorites:updated', {
+            favorites: user.favorites,
+            shopId,
+            isFavorited: !isFavorited,
+        });
 
         res.status(200).json({ favorites: user.favorites, isFavorited: !isFavorited });
     } catch (error) {

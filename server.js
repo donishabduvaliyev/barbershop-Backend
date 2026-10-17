@@ -16,6 +16,7 @@ import { Server } from 'socket.io';
 import { startBot } from './config/telegramBot.js';
 import { startShopControlBot } from './config/shopControlBot.js';
 import { verifyAdminToken } from './middleware/adminAuth.js';
+import { verifyTelegramInitData, verifyMobileCustomerToken } from './middleware/telegramAuth.js';
 import { setIO } from './config/socket.js';
 import shopRoutes from './routes/shops.js';
 import userRouter from './routes/userData.js';
@@ -30,6 +31,8 @@ import superAdminRouter from './routes/superAdmin.js';
 import superAdminCategoriesRouter from './routes/superAdminCategories.js';
 import superAdminReviewsRouter from './routes/superAdminReviews.js';
 import trackRouter from './routes/track.js';
+import webRouter from './routes/web/index.js';
+import mobileRouter from './routes/mobile/index.js';
 import { startReminderJob } from './jobs/reminders.js';
 import { startWinBackJob } from './jobs/winBack.js';
 import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
@@ -62,20 +65,44 @@ const allowedOrigins = [
     'http://localhost:5174',
     'http://localhost:5175',
     'http://localhost:5176',
+    'http://localhost:8081',
+    'http://localhost:19006',
 ].filter(Boolean);
 
 app.use(cors({
-    origin: allowedOrigins,
+    // Native mobile apps (React Native / OkHttp / CFNetwork) send no Origin
+    // header (!origin), which is allowed automatically while web origins are
+    // checked against allowedOrigins.
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(null, true);
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    allowedheaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'x-telegram-init-data',
+        'x-mobile-token',
+        'x-client-platform',
+        'ngrok-skip-browser-warning',
+    ],
 }));
 
 app.use(express.json());
 
 app.get('/', (req, res) => {
-    res.send('Barbershop Booking API is running...');
+    res.send('Barbershop Booking API is running (Web & Mobile Unified)...');
 });
 
+// Split Backend Modules:
+// 1. /api/web/*    -> Dedicated Telegram Mini App (Web) module
+// 2. /api/mobile/* -> Dedicated React Native (Android & iOS) module
+app.use('/api/web', webRouter);
+app.use('/api/mobile', mobileRouter);
+
+// Root customer routes (automatically switch between Web initData and Mobile Bearer JWT)
 app.use('/api/shops', shopRoutes);
 app.use('/api/user', userRouter);
 app.use('/api/auth', authRouter);
@@ -92,21 +119,87 @@ app.use('/api/track', trackRouter);
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
-    cors: { origin: allowedOrigins, methods: ['GET', 'POST'] },
+    cors: { origin: true, methods: ['GET', 'POST'] },
 });
 
-// Every admin-panel socket connection must present the same JWT issued by
-// /api/admin/auth — it's then auto-joined to its own shop's room, never a
-// client-requested one, so one shop's tab can never subscribe to another's.
+// Unified Real-Time Socket.io Auth:
+// Supports:
+// 1. Shop Admin Panel (`auth.token` = admin JWT) -> joins `shop:<shopId>`
+// 2. Mobile Customer (`auth.mobileToken` = customer JWT) -> joins `user:<telegramId>`
+// 3. Web Mini App Customer (`auth.initData` = Telegram HMAC initData) -> joins `user:<telegramId>`
+// 4. Pre-login Mobile Handshake (`auth.authSessionToken`) -> joins `auth:<sessionToken>`
+// 5. Public Shop Availability Watcher (`auth.public = true`) -> can watch `public:shop:<shopId>`
 io.use((socket, next) => {
-    const payload = verifyAdminToken(socket.handshake.auth?.token);
-    if (!payload) return next(new Error('Unauthorized'));
-    socket.shopId = payload.shopId;
-    next();
+    const auth = socket.handshake.auth || {};
+
+    // 1. Admin panel token
+    if (auth.token) {
+        const payload = verifyAdminToken(auth.token);
+        if (!payload || !payload.shopId) return next(new Error('Unauthorized'));
+        socket.clientRole = 'admin';
+        socket.shopId = payload.shopId;
+        return next();
+    }
+
+    // 2. Mobile app customer JWT
+    if (auth.mobileToken) {
+        const mobileUser = verifyMobileCustomerToken(auth.mobileToken);
+        if (!mobileUser) return next(new Error('Unauthorized'));
+        socket.clientRole = 'customer';
+        socket.clientPlatform = 'mobile';
+        socket.telegramId = String(mobileUser.id);
+        return next();
+    }
+
+    // 3. Web Mini App customer initData
+    if (auth.initData) {
+        const tgUser = verifyTelegramInitData(auth.initData, process.env.TELEGRAM_BOT_TOKEN);
+        if (!tgUser) return next(new Error('Unauthorized'));
+        socket.clientRole = 'customer';
+        socket.clientPlatform = 'web';
+        socket.telegramId = String(tgUser.id);
+        return next();
+    }
+
+    // 4. Pre-login mobile Telegram deep-link auth session watcher
+    if (auth.authSessionToken && /^[a-f0-9]{32}$/.test(auth.authSessionToken)) {
+        socket.clientRole = 'auth_watcher';
+        socket.authSessionToken = auth.authSessionToken;
+        return next();
+    }
+
+    // 5. Public availability watcher (for browsing shops before logging in)
+    if (auth.public === true) {
+        socket.clientRole = 'public';
+        return next();
+    }
+
+    return next(new Error('Unauthorized'));
 });
 
 io.on('connection', (socket) => {
-    socket.join(`shop:${socket.shopId}`);
+    if (socket.clientRole === 'admin' && socket.shopId) {
+        socket.join(`shop:${socket.shopId}`);
+    } else if (socket.clientRole === 'customer' && socket.telegramId) {
+        socket.join(`user:${socket.telegramId}`);
+    } else if (socket.clientRole === 'auth_watcher' && socket.authSessionToken) {
+        socket.join(`auth:${socket.authSessionToken}`);
+    }
+
+    // Allow both Web and Mobile customers to subscribe to live slot updates
+    // for the shop they currently have open on screen.
+    if (socket.clientRole === 'customer' || socket.clientRole === 'public') {
+        socket.on('watch:shop', (shopId) => {
+            if (typeof shopId === 'string' && /^[a-f0-9]{24}$/i.test(shopId)) {
+                socket.join(`public:shop:${shopId}`);
+            }
+        });
+        socket.on('unwatch:shop', (shopId) => {
+            if (typeof shopId === 'string' && /^[a-f0-9]{24}$/i.test(shopId)) {
+                socket.leave(`public:shop:${shopId}`);
+            }
+        });
+    }
 });
 
 setIO(io);
