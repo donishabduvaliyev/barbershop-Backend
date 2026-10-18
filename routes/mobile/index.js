@@ -396,7 +396,7 @@ router.get('/admin/check', requireTelegramAuth, async (req, res) => {
         adminPanelUrl,
         shops: shops.map((s) => ({
           id: s._id.toString(),
-          name: s.name,
+          name: typeof s.name === 'string' ? s.name : (s.name?.uz || s.name?.ru || s.name?.en || 'Barbershop'),
           image: s.image || '',
         })),
       });
@@ -435,7 +435,7 @@ router.post('/admin/switch-shop', requireTelegramAuth, async (req, res) => {
       adminToken,
       shop: {
         id: shop._id.toString(),
-        name: shop.name,
+        name: typeof shop.name === 'string' ? shop.name : (shop.name?.uz || shop.name?.ru || shop.name?.en || 'Barbershop'),
         image: shop.image || '',
       },
     });
