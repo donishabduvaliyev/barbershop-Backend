@@ -42,11 +42,12 @@ router.get('/shops', async (req, res) => {
   try {
     const { search, status } = req.query;
     const match = {};
-    if (search) {
+    if (typeof search === 'string' && search.trim()) {
+      const escaped = search.trim().slice(0, 60).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       match.$or = [
-        { 'name.en': { $regex: search, $options: 'i' } },
-        { 'name.uz': { $regex: search, $options: 'i' } },
-        { 'name.ru': { $regex: search, $options: 'i' } },
+        { 'name.en': { $regex: escaped, $options: 'i' } },
+        { 'name.uz': { $regex: escaped, $options: 'i' } },
+        { 'name.ru': { $regex: escaped, $options: 'i' } },
       ];
     }
     if (status === 'active') match.isOperational = true;

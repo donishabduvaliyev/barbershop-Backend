@@ -16,6 +16,10 @@ import { getCached, setCached } from '../utils/simpleCache.js';
 
 const router = express.Router();
 
+function escapeRegex(text) {
+  return typeof text === 'string' ? text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+}
+
 // A flood of requests (a retry-loop bug, or someone mashing the button) can
 // spam a shop owner with duplicate Telegram notifications and risks hitting
 // Telegram's own per-chat rate limit — so this is capped per Telegram
@@ -96,9 +100,14 @@ router.post('/search-shops', async (req, res) => {
 
     const matchQuery = { isOperational: true };
 
-    // Add search by name using a case-insensitive regex
-    if (name) {
-      matchQuery['name.ru'] = { $regex: name, $options: 'i' };
+    // Add search by name using an escaped case-insensitive regex across all languages
+    if (typeof name === 'string' && name.trim()) {
+      const escaped = escapeRegex(name.trim().slice(0, 60));
+      matchQuery.$or = [
+        { 'name.en': { $regex: escaped, $options: 'i' } },
+        { 'name.uz': { $regex: escaped, $options: 'i' } },
+        { 'name.ru': { $regex: escaped, $options: 'i' } },
+      ];
     }
     // ... add other filters like category, priceTiers, etc.
     if (category) matchQuery.category = category;
@@ -246,11 +255,12 @@ router.post('/discovery-search', async (req, res) => {
     if (category) {
       baseMatch.category = category;
     }
-    if (searchTerm) {
+    if (typeof searchTerm === 'string' && searchTerm.trim()) {
+      const escaped = escapeRegex(searchTerm.trim().slice(0, 60));
       baseMatch.$or = [
-        { 'name.en': { $regex: searchTerm, $options: 'i' } },
-        { 'name.uz': { $regex: searchTerm, $options: 'i' } },
-        { 'name.ru': { $regex: searchTerm, $options: 'i' } },
+        { 'name.en': { $regex: escaped, $options: 'i' } },
+        { 'name.uz': { $regex: escaped, $options: 'i' } },
+        { 'name.ru': { $regex: escaped, $options: 'i' } },
       ];
     }
 
@@ -411,14 +421,6 @@ router.get('/service/:id/availability', async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
-// Regex metacharacters in free-text user input (e.g. "haircut (kids)")
-// would otherwise either throw on an invalid pattern or match in
-// unintended ways — the existing name-search endpoints above don't escape
-// this, but new code shouldn't repeat that gap.
-function escapeRegex(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 // Cross-shop "find available now" search: given a free-text service query
 // and a desired hour, returns every operational shop that (a) has at least

@@ -57,6 +57,8 @@ process.on('uncaughtException', (err) => {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+import rateLimit from 'express-rate-limit';
+
 const allowedOrigins = [
     'https://barbershop-telegram-bot.netlify.app',
     'https://admin-healthcare-namangan.netlify.app',
@@ -69,6 +71,22 @@ const allowedOrigins = [
     'http://localhost:19006',
 ].filter(Boolean);
 
+const authRateLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Too many requests, please try again in a few minutes.' },
+});
+
+// Basic HTTP Security Headers
+app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
+});
+
 app.use(cors({
     // Native mobile apps (React Native / OkHttp / CFNetwork) send no Origin
     // header (!origin), which is allowed automatically while web origins are
@@ -77,7 +95,12 @@ app.use(cors({
         if (!origin || allowedOrigins.includes(origin)) {
             return callback(null, true);
         }
-        return callback(null, true);
+        if (process.env.NODE_ENV !== 'production') {
+            if (/^https?:\/\/localhost(:\d+)?$/.test(origin) || /\.ngrok(-free)?\.app$/.test(origin)) {
+                return callback(null, true);
+            }
+        }
+        return callback(new Error('Blocked by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: [
@@ -105,8 +128,8 @@ app.use('/api/mobile', mobileRouter);
 // Root customer routes (automatically switch between Web initData and Mobile Bearer JWT)
 app.use('/api/shops', shopRoutes);
 app.use('/api/user', userRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/admin/auth', adminAuthRouter);
+app.use('/api/auth', authRateLimiter, authRouter);
+app.use('/api/admin/auth', authRateLimiter, adminAuthRouter);
 app.use('/api/admin/shop', adminShopRouter);
 app.use('/api/admin/appointments', adminAppointmentsRouter);
 app.use('/api/admin/stats', adminStatsRouter);

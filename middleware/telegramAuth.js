@@ -4,7 +4,11 @@ import jwt from 'jsonwebtoken';
 const MOBILE_TOKEN_TTL = '30d';
 
 function getJwtSecret() {
-  return process.env.JWT_SECRET || process.env.TELEGRAM_BOT_TOKEN || 'tezkor-mobile-secret';
+  const secret = process.env.JWT_SECRET || process.env.TELEGRAM_BOT_TOKEN;
+  if (!secret) {
+    throw new Error('FATAL: Neither JWT_SECRET nor TELEGRAM_BOT_TOKEN is configured in the environment.');
+  }
+  return secret;
 }
 
 // Signs a long-lived JWT for the React Native (Android/iOS) mobile app
