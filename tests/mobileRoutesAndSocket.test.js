@@ -8,6 +8,7 @@ import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import Review from '../models/review.js';
 import MobileAuthSession from '../models/mobileAuthSession.js';
+import SuperAdmin from '../models/superAdmin.js';
 import mobileRouter from '../routes/mobile/index.js';
 import webRouter from '../routes/web/index.js';
 import shopRoutes from '../routes/shops.js';
@@ -418,5 +419,67 @@ describe('Automatic Web (initData) vs Mobile (Bearer JWT) Switching on Shared Ro
     expect(meData.user.favorites.map(String)).toContain(shop._id.toString());
     expect(meData.bookings.length).toBe(1);
     expect(meData.bookings[0].userName).toBe('Kamol');
+  });
+
+  it('verifies GET /api/mobile/admin/check and POST /api/mobile/admin/switch-shop for customers, owners, and superadmins', async () => {
+    // 1. Regular customer check -> isAdmin: false
+    const customerJwt = signMobileCustomerToken({ telegramId: 999111, username: 'regular_cust', name: 'Regular' });
+    const regRes = await fetch(`${baseUrl}/api/mobile/admin/check`, {
+      headers: { Authorization: `Bearer ${customerJwt}` },
+    });
+    expect(regRes.status).toBe(200);
+    const regData = await regRes.json();
+    expect(regData.isAdmin).toBe(false);
+    expect(regData.role).toBeNull();
+    expect(regData.adminToken).toBeNull();
+
+    // 2. Shop Owner check -> isAdmin: true, role: 'owner'
+    const ownerTelegramId = 888222;
+    const shop1 = await makeShop({
+      name: { uz: 'Owner Shop 1', ru: 'Owner Shop 1', en: 'Owner Shop 1' },
+      ownerTelegramId,
+    });
+    const shop2 = await makeShop({
+      name: { uz: 'Owner Shop 2', ru: 'Owner Shop 2', en: 'Owner Shop 2' },
+      ownerTelegramId,
+    });
+
+    const ownerJwt = signMobileCustomerToken({ telegramId: ownerTelegramId, username: 'shop_boss', name: 'Boss' });
+    const ownerRes = await fetch(`${baseUrl}/api/mobile/admin/check`, {
+      headers: { Authorization: `Bearer ${ownerJwt}` },
+    });
+    expect(ownerRes.status).toBe(200);
+    const ownerData = await ownerRes.json();
+    expect(ownerData.isAdmin).toBe(true);
+    expect(ownerData.role).toBe('owner');
+    expect(typeof ownerData.adminToken).toBe('string');
+    expect(ownerData.shops.length).toBe(2);
+
+    // 3. Switch shop to shop2
+    const switchRes = await fetch(`${baseUrl}/api/mobile/admin/switch-shop`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerJwt}`,
+      },
+      body: JSON.stringify({ shopId: shop2._id.toString() }),
+    });
+    expect(switchRes.status).toBe(200);
+    const switchData = await switchRes.json();
+    expect(typeof switchData.adminToken).toBe('string');
+    expect(switchData.shop.id).toBe(shop2._id.toString());
+
+    // 4. SuperAdmin check -> isAdmin: true, role: 'superadmin'
+    const superAdminTelegramId = 777333;
+    await SuperAdmin.create({ telegramId: superAdminTelegramId, username: 'super_boss' });
+    const superJwt = signMobileCustomerToken({ telegramId: superAdminTelegramId, username: 'super_boss', name: 'Super' });
+    const superRes = await fetch(`${baseUrl}/api/mobile/admin/check`, {
+      headers: { Authorization: `Bearer ${superJwt}` },
+    });
+    expect(superRes.status).toBe(200);
+    const superData = await superRes.json();
+    expect(superData.isAdmin).toBe(true);
+    expect(superData.role).toBe('superadmin');
+    expect(typeof superData.adminToken).toBe('string');
   });
 });

@@ -5,6 +5,8 @@ import Booking from '../../models/bookingHistory.js';
 import Review from '../../models/review.js';
 import ServicesModel from '../../models/shopData.js';
 import MobileAuthSession from '../../models/mobileAuthSession.js';
+import SuperAdmin from '../../models/superAdmin.js';
+import { signAdminToken, signSuperAdminToken } from '../../middleware/adminAuth.js';
 import {
   requireTelegramAuth,
   verifyTelegramInitData,
@@ -358,7 +360,93 @@ router.post('/reviews', requireTelegramAuth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. SHARED CORE ROUTES UNDER /api/mobile/*
+// 3. ADMIN PRIVILEGES CHECK & INTEGRATION FOR MOBILE
+// ---------------------------------------------------------------------------
+
+// Check if the authenticated customer is a shop owner or superadmin
+router.get('/admin/check', requireTelegramAuth, async (req, res) => {
+  try {
+    const telegramId = Number(req.telegramUser.id);
+    const adminPanelUrl = process.env.ADMIN_PANEL_URL || 'https://admin-healthcare-namangan.netlify.app';
+
+    // 1. Check SuperAdmin
+    const superAdmin = await SuperAdmin.findOne({ telegramId });
+    if (superAdmin) {
+      const adminToken = signSuperAdminToken({ telegramId });
+      return res.status(200).json({
+        isAdmin: true,
+        role: 'superadmin',
+        adminToken,
+        adminPanelUrl,
+        shops: [],
+      });
+    }
+
+    // 2. Check Shop Owner
+    const shops = await ServicesModel.find({ ownerTelegramId: telegramId });
+    if (shops.length > 0) {
+      const adminToken = signAdminToken({
+        telegramId,
+        shopId: shops[0]._id.toString(),
+      });
+      return res.status(200).json({
+        isAdmin: true,
+        role: 'owner',
+        adminToken,
+        adminPanelUrl,
+        shops: shops.map((s) => ({
+          id: s._id.toString(),
+          name: s.name,
+          image: s.image || '',
+        })),
+      });
+    }
+
+    // 3. Normal customer
+    return res.status(200).json({
+      isAdmin: false,
+      role: null,
+      adminToken: null,
+      adminPanelUrl,
+      shops: [],
+    });
+  } catch (error) {
+    console.error('Error checking admin status for mobile user:', error);
+    res.status(500).json({ message: 'Server error checking admin privileges.' });
+  }
+});
+
+// Switch active shop for multi-shop owner
+router.post('/admin/switch-shop', requireTelegramAuth, async (req, res) => {
+  try {
+    const telegramId = Number(req.telegramUser.id);
+    const { shopId } = req.body || {};
+    if (!shopId) {
+      return res.status(400).json({ message: 'shopId is required.' });
+    }
+
+    const shop = await ServicesModel.findOne({ _id: shopId, ownerTelegramId: telegramId });
+    if (!shop) {
+      return res.status(403).json({ message: 'That shop is not linked to your Telegram account.' });
+    }
+
+    const adminToken = signAdminToken({ telegramId, shopId: shop._id.toString() });
+    res.status(200).json({
+      adminToken,
+      shop: {
+        id: shop._id.toString(),
+        name: shop.name,
+        image: shop.image || '',
+      },
+    });
+  } catch (error) {
+    console.error('Error switching admin shop on mobile:', error);
+    res.status(500).json({ message: 'Server error switching shop.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 4. SHARED CORE ROUTES UNDER /api/mobile/*
 // ---------------------------------------------------------------------------
 router.use('/shops', shopRoutes);
 router.use('/user', userRouter);

@@ -1,6 +1,13 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET;
+function getAdminJwtSecret() {
+  const secret = process.env.JWT_SECRET || process.env.TELEGRAM_BOT_TOKEN;
+  if (!secret) {
+    throw new Error('FATAL: Neither JWT_SECRET nor TELEGRAM_BOT_TOKEN is configured.');
+  }
+  return secret;
+}
+
 const TOKEN_TTL = '12h';
 const IDENTITY_TOKEN_TTL = '10m';
 
@@ -8,7 +15,7 @@ const IDENTITY_TOKEN_TTL = '10m';
 // resolves it to a shop the caller owns — everything downstream trusts only
 // this token's shopId, never anything the client sends directly.
 export function signAdminToken({ telegramId, shopId }) {
-  return jwt.sign({ telegramId, shopId }, JWT_SECRET, { expiresIn: TOKEN_TTL });
+  return jwt.sign({ telegramId, shopId }, getAdminJwtSecret(), { expiresIn: TOKEN_TTL });
 }
 
 // Proves "this is really telegramId" without committing to a shop yet —
@@ -16,19 +23,19 @@ export function signAdminToken({ telegramId, shopId }) {
 // (routes/adminAuth.js's /select-shop). Short-lived since it's only meant
 // to bridge the gap between verifying identity and choosing a shop.
 export function signIdentityToken({ telegramId }) {
-  return jwt.sign({ telegramId, shopId: null }, JWT_SECRET, { expiresIn: IDENTITY_TOKEN_TTL });
+  return jwt.sign({ telegramId, shopId: null }, getAdminJwtSecret(), { expiresIn: IDENTITY_TOKEN_TTL });
 }
 
 // Platform-wide session, not scoped to any one shop — see
 // routes/superAdmin.js and requireSuperAdmin below. Same TTL as a normal
 // admin session.
 export function signSuperAdminToken({ telegramId }) {
-  return jwt.sign({ telegramId, shopId: null, role: 'superadmin' }, JWT_SECRET, { expiresIn: TOKEN_TTL });
+  return jwt.sign({ telegramId, shopId: null, role: 'superadmin' }, getAdminJwtSecret(), { expiresIn: TOKEN_TTL });
 }
 
 export function verifyAdminToken(token) {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, getAdminJwtSecret());
   } catch {
     return null;
   }
