@@ -122,9 +122,14 @@ export async function createBooking({
     ? (resolvedService.name?.[userLanguage] || resolvedService.name?.en || resolvedService.name?.ru || resolvedService.name?.uz || '')
     : '';
 
+  const resolvedShopName = shopName
+    || (typeof shop.name === 'object'
+        ? (shop.name?.[userLanguage] || shop.name?.uz || shop.name?.ru || shop.name?.en || 'Barbershop')
+        : (shop.name || 'Barbershop'));
+
   const baseFields = {
     shopId,
-    shopName: shopName || shop.name?.en || '',
+    shopName: resolvedShopName,
     userTelegramId,
     userTelegramUsername,
     requestedTime: requestedTimeDate,

@@ -227,8 +227,15 @@ io.on('connection', (socket) => {
 
 setIO(io);
 
-mongoose.connect(process.env.MONGO_URI, {
-}).then(() => {
+const mongooseOptions = {
+    maxPoolSize: 100,
+    minPoolSize: 10,
+    socketTimeoutMS: 45000,
+    serverSelectionTimeoutMS: 10000,
+    family: 4,
+};
+
+mongoose.connect(process.env.MONGO_URI, mongooseOptions).then(() => {
     console.log('✅ MongoDB connected');
     // Both bot tokens only support one active poller each — if a production
     // deployment is already polling the same token (the usual case when
@@ -254,3 +261,41 @@ mongoose.connect(process.env.MONGO_URI, {
 }).catch((err) => {
     console.error('❌ MongoDB connection error:', err);
 });
+
+// Graceful Shutdown: drains in-flight requests, terminates WebSockets, and disconnects MongoDB cleanly
+let isShuttingDown = false;
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
+
+    const shutdownTimeout = setTimeout(() => {
+        console.error('⚠️ Graceful shutdown timed out after 10s. Forcing exit.');
+        process.exit(1);
+    }, 10000);
+    shutdownTimeout.unref();
+
+    try {
+        if (httpServer && httpServer.listening) {
+            await new Promise((resolve) => httpServer.close(resolve));
+            console.log('✅ HTTP server closed.');
+        }
+        if (io) {
+            await new Promise((resolve) => io.close(resolve));
+            console.log('✅ Socket.io server closed.');
+        }
+        if (mongoose.connection && mongoose.connection.readyState === 1) {
+            await mongoose.connection.close(false);
+            console.log('✅ MongoDB connection closed.');
+        }
+        clearTimeout(shutdownTimeout);
+        process.exit(0);
+    } catch (err) {
+        console.error('❌ Error during graceful shutdown:', err);
+        process.exit(1);
+    }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+

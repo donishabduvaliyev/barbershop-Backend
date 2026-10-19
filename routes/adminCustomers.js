@@ -26,14 +26,19 @@ function topN(items, n) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name]) => name);
 }
 
+function escapeRegex(text) {
+  return typeof text === 'string' ? text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+}
+
 router.get('/', async (req, res) => {
   try {
     const search = req.query.search?.trim();
     const match = { shopId: new mongoose.Types.ObjectId(req.shopId), status: VISITED_STATUS };
     if (search) {
+      const safeSearch = escapeRegex(search);
       match.$or = [
-        { userName: { $regex: search, $options: 'i' } },
-        { userNumber: { $regex: search, $options: 'i' } },
+        { userName: { $regex: safeSearch, $options: 'i' } },
+        { userNumber: { $regex: safeSearch, $options: 'i' } },
       ];
     }
 
@@ -172,8 +177,27 @@ router.post('/', async (req, res) => {
     const { name, number } = req.body;
     if (!name) return res.status(400).json({ message: 'name is required.' });
 
+    const trimmedNumber = typeof number === 'string' ? number.trim() : '';
+    if (trimmedNumber) {
+      const existing = await Customer.findOne({ shopId: req.shopId, number: trimmedNumber });
+      if (existing) {
+        return res.status(200).json({
+          telegramId: existing.telegramId,
+          userName: existing.name,
+          userTelegramUsername: '',
+          userNumber: existing.number,
+          visitCount: 0,
+          totalSpent: 0,
+          lastVisit: null,
+          favoriteServices: [],
+          preferredStaff: null,
+          notes: existing.notes || '',
+        });
+      }
+    }
+
     const telegramId = generateSyntheticTelegramId();
-    const customer = await Customer.create({ shopId: req.shopId, telegramId, name, number: number || '' });
+    const customer = await Customer.create({ shopId: req.shopId, telegramId, name: name.trim(), number: trimmedNumber });
     res.status(201).json({
       telegramId: customer.telegramId,
       userName: customer.name,

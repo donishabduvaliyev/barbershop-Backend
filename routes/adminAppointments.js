@@ -129,7 +129,7 @@ router.post('/', async (req, res) => {
     const shop = await ServicesModel.findById(req.shopId).select('name');
     const booking = await createBooking({
       shopId: req.shopId,
-      shopName: shop?.name?.en || '',
+      shopName: typeof shop?.name === 'string' ? shop.name : (shop?.name?.uz || shop?.name?.ru || shop?.name?.en || 'Barbershop'),
       requestedTime,
       staffId: staffId || null,
       serviceId: serviceId || null,

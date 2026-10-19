@@ -18,6 +18,8 @@ const ReviewSchema = new Schema({
   hiddenAt: { type: Date, default: null },
 }, { timestamps: true });
 
+ReviewSchema.index({ shopId: 1, isHidden: 1 });
+
 const Review = model('Review', ReviewSchema, 'ReviewData');
 
 export default Review;

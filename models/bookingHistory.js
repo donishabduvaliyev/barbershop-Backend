@@ -115,6 +115,14 @@ BookingSchema.index({ status: 1, requestedTime: 1 });
 // incidental prefix match.
 BookingSchema.index({ shopId: 1, requestedTime: 1 });
 
+// High-concurrency compound indexes:
+// 1. Speeds up admin appointments filter and pagination by shop + status + time
+BookingSchema.index({ shopId: 1, status: 1, requestedTime: 1 });
+
+// 2. Speeds up customer history and profile queries sorted by creation or time
+BookingSchema.index({ userTelegramId: 1, createdAt: -1 });
+BookingSchema.index({ userTelegramId: 1, requestedTime: -1 });
+
 const Booking = model('Booking', BookingSchema, 'BookingData');
 
 export default Booking;

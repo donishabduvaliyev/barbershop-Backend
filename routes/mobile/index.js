@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'crypto';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import User from '../../models/userdata.js';
 import Booking from '../../models/bookingHistory.js';
 import Review from '../../models/review.js';
@@ -20,6 +21,23 @@ import userRouter from '../userData.js';
 
 const router = express.Router();
 
+const mobileAuthStartLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many authentication attempts. Please try again shortly.' },
+});
+
+const mobileReviewLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.telegramUser?.id?.toString() || ipKeyGenerator(req.ip),
+  message: { message: 'Too many reviews submitted. Please try again later.' },
+});
+
 router.use((req, _res, next) => {
   req.clientPlatform = 'mobile';
   next();
@@ -31,7 +49,7 @@ router.use((req, _res, next) => {
 
 // Step 1: Mobile app requests a new login session token and receives the
 // native `tg://resolve` deep link + fallback `https://t.me` link.
-router.post('/auth/telegram/start', async (req, res) => {
+router.post('/auth/telegram/start', mobileAuthStartLimiter, async (req, res) => {
   try {
     const { deviceName = '', platform = 'android' } = req.body || {};
     const sessionToken = crypto.randomBytes(16).toString('hex'); // 32 hex chars
@@ -294,7 +312,7 @@ router.post('/push-token', requireTelegramAuth, async (req, res) => {
 
 // Rate a completed booking directly inside the mobile app (syncs with the
 // same Review collection used by the Telegram bot's inline rating buttons).
-router.post('/reviews', requireTelegramAuth, async (req, res) => {
+router.post('/reviews', requireTelegramAuth, mobileReviewLimiter, async (req, res) => {
   try {
     const { bookingId, rating, staffRating } = req.body || {};
     const stars = Number(rating);
