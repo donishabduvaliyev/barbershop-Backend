@@ -33,6 +33,7 @@ import superAdminReviewsRouter from './routes/superAdminReviews.js';
 import trackRouter from './routes/track.js';
 import webRouter from './routes/web/index.js';
 import mobileRouter from './routes/mobile/index.js';
+import publicInquiriesRouter from './routes/publicInquiries.js';
 import { startReminderJob } from './jobs/reminders.js';
 import { startWinBackJob } from './jobs/winBack.js';
 import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
@@ -62,7 +63,11 @@ import rateLimit from 'express-rate-limit';
 const allowedOrigins = [
     'https://barbershop-telegram-bot.netlify.app',
     'https://admin-healthcare-namangan.netlify.app',
+    'https://smartchair.uz',
+    'https://www.smartchair.uz',
+    'https://smartchair-business.netlify.app',
     process.env.ADMIN_PANEL_URL,
+    process.env.LANDING_PAGE_URL,
     'http://localhost:5173',
     'http://localhost:5174',
     'http://localhost:5175',
@@ -124,6 +129,7 @@ app.get('/', (req, res) => {
 // 2. /api/mobile/* -> Dedicated React Native (Android & iOS) module
 app.use('/api/web', webRouter);
 app.use('/api/mobile', mobileRouter);
+app.use('/api/public', publicInquiriesRouter);
 
 // Root customer routes (automatically switch between Web initData and Mobile Bearer JWT)
 app.use('/api/shops', shopRoutes);
