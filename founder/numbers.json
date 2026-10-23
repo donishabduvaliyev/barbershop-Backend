@@ -1,0 +1,23 @@
+{
+  "business": "SmartChair (Barbershop OS & Booking SaaS)",
+  "unit": "shop-month",
+  "price": 18.00,
+  "variable": [
+    { "label": "Database cluster quota per shop", "cost": 0.50 },
+    { "label": "VPS compute & Socket.io traffic share", "cost": 0.80 },
+    { "label": "SMS gateway & Telegram Bot delivery", "cost": 1.20 }
+  ],
+  "fixed_monthly": [
+    { "label": "Dedicated VPS + MongoDB Atlas baseline cluster", "cost": 45.00 },
+    { "label": "Domain, SSL, telemetry & error monitoring", "cost": 15.00 }
+  ],
+  "startup": [
+    { "label": "Domain registration & local entity registration", "cost": 120.00 },
+    { "label": "Initial acrylic QR mirror stickers for first 100 shops", "cost": 90.00 },
+    { "label": "Pilot launch video ads (Instagram Reels & Telegram)", "cost": 250.00 }
+  ],
+  "days_per_month": 30,
+  "capacity_per_day": 10.0,
+  "plan_per_day": 2.5,
+  "ramp_per_day": [0.33, 0.67, 1.00, 1.33, 1.67, 2.00, 2.20, 2.40, 2.50, 2.60, 2.70, 2.80]
+}
