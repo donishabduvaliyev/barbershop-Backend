@@ -241,6 +241,50 @@ function filterAndOrderManualShops(shopIds, shopsById, baseMatch) {
 const DISCOVERY_DEFAULT_CACHE_KEY = 'discovery-search-default';
 const DISCOVERY_DEFAULT_TTL_MS = 15_000;
 
+// Maps Uzbek, Russian, and English search terms to standard category enums
+const CATEGORY_SEARCH_SYNONYMS = {
+  'Barbershop': [
+    'barber', 'barbershop',
+    'sartarosh', 'sartaroshxona', 'sartaroshxona namangan', 'erkaklar saloni', 'soch', 'soqol',
+    'барбер', 'барбершоп', 'парикмахерская', 'парикмахер', 'мужской салон', 'сартарош', 'сартарошхона', 'борода'
+  ],
+  'Beauty Spas': [
+    'beauty', 'spa', 'beauty spas', 'salon',
+    "go'zallik", "go'zallik saloni", 'spa saloni', 'ayollar saloni', 'yuz parvarishi',
+    'салон красоты', 'спа', 'спа салон', 'бьюти', 'уход за лицом', 'гузаллик'
+  ],
+  'Hair Salon': [
+    'hair', 'hair salon', 'salon',
+    'soch saloni', 'ayollar sartaroshxonasi', 'turmaklash', 'soch bo\'yash',
+    'парикмахерская', 'салон причесок', 'стилист', 'укладка', 'окрашивание', 'волосы'
+  ],
+  'Nail Salon': [
+    'nail', 'nails', 'nail salon', 'manicure', 'pedicure',
+    'tirnoq', 'manikyur', 'pedikyur', 'tirnoq saloni', 'lak', 'gel lak',
+    'маникюр', 'педикюр', 'ногти', 'ногтевой салон', 'гель-лак'
+  ],
+  'Massage Therapy': [
+    'massage', 'massage therapy',
+    'massaj', 'massaj saloni', 'massaj markazi',
+    'массаж', 'массажист', 'массажный салон'
+  ],
+};
+
+function getMatchedCategories(term) {
+  if (!term || typeof term !== 'string') return [];
+  const normalized = term.toLowerCase().trim();
+  const matched = new Set();
+  for (const [cat, synonyms] of Object.entries(CATEGORY_SEARCH_SYNONYMS)) {
+    for (const syn of synonyms) {
+      if (normalized.includes(syn) || syn.includes(normalized)) {
+        matched.add(cat);
+        break;
+      }
+    }
+  }
+  return Array.from(matched);
+}
+
 router.post('/discovery-search', async (req, res) => {
   try {
     const { searchTerm, category, userLocation } = req.body;
@@ -256,12 +300,28 @@ router.post('/discovery-search', async (req, res) => {
       baseMatch.category = category;
     }
     if (typeof searchTerm === 'string' && searchTerm.trim()) {
-      const escaped = escapeRegex(searchTerm.trim().slice(0, 60));
-      baseMatch.$or = [
+      const trimmed = searchTerm.trim().slice(0, 60);
+      const escaped = escapeRegex(trimmed);
+      const matchedCats = getMatchedCategories(trimmed);
+
+      const orConditions = [
         { 'name.en': { $regex: escaped, $options: 'i' } },
         { 'name.uz': { $regex: escaped, $options: 'i' } },
         { 'name.ru': { $regex: escaped, $options: 'i' } },
+        { 'description.en': { $regex: escaped, $options: 'i' } },
+        { 'description.uz': { $regex: escaped, $options: 'i' } },
+        { 'description.ru': { $regex: escaped, $options: 'i' } },
+        { 'services.name.en': { $regex: escaped, $options: 'i' } },
+        { 'services.name.uz': { $regex: escaped, $options: 'i' } },
+        { 'services.name.ru': { $regex: escaped, $options: 'i' } },
+        { 'address': { $regex: escaped, $options: 'i' } },
       ];
+
+      if (matchedCats.length > 0) {
+        orConditions.push({ category: { $in: matchedCats } });
+      }
+
+      baseMatch.$or = orConditions;
     }
 
     // advertisedShops and shelves don't depend on each other — fetched
