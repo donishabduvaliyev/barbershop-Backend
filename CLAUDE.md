@@ -63,3 +63,29 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## 5. Developer Skills & Engineering Toolbelt
+
+The following developer skills are installed globally and ready for invocation in any session:
+
+1. **Andrej Karpathy Guidelines** (`karpathy-guidelines`):
+   - Strict bias towards minimalism, surgical edits, zero speculative abstractions, and goal-driven verification before and after every modification.
+2. **Matt Pocock SDLC Skills** (`mattpocock/skills`):
+   - `grill-me`: Relentless design-tree interview to sharpen ambiguous requirements, uncover hidden assumptions, and settle all prerequisites before code is written.
+   - `to-spec`: Transform user requests into unambiguous specifications with inputs, outputs, edge cases, and verifiable criteria.
+   - `to-tickets`: Decompose complex epics into small, self-contained, reviewable tickets.
+   - `implement`: Test-driven, surgical implementation following specifications.
+   - `diagnosing-bugs`: Systematic bug reproduction, hypothesis generation, and root cause isolation.
+3. **Anthropic Claude Code Security Review** (`claude-security-review`):
+   - High-confidence vulnerability audit targeting injection risks (SQL/NoSQL/Command/XSS), authentication/authorization bypasses, IDOR, sensitive PII leakage, and cryptography issues.
+4. **Supabase & Postgres Best Practices** (`supabase`, `supabase-postgres-best-practices`):
+   - Best practices for database schema design, index performance, transactions, and Row Level Security (RLS).
+5. **Convex Agent Skills** (`convex`, `convex-expert`):
+   - Reactive backend design, queries, mutations, actions, schemas, and performance tuning.
+6. **Emil Kowalski Design & Motion** (`emilkowalski-animate`, `make-interfaces-feel-better`):
+   - Natural easing curves (`cubic-bezier`, spring physics), hover lift effects, layout transitions, and micro-interactions.
+7. **Impeccable & Taste Skills** (`impeccable`, `taste-skill`, `design-taste`):
+   - Elite frontend craft, anti-slop rules, responsive design auditing (`craft`, `shape`, `polish`, `audit`, `bolder`, `quieter`, `harden`), curated palettes, and typography hierarchy.
+
