@@ -35,6 +35,15 @@ const bookingRateLimiter = rateLimit({
   message: { message: "You're sending requests too quickly — please wait a few minutes and try again." },
 });
 
+// Protect heavy search endpoints from bot scraping and denial of service
+const searchRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many search requests — please slow down." },
+});
+
 
 
 // This is every customer's app-open request, identical for everyone at any
@@ -85,7 +94,7 @@ router.get('/home-feed', async (req, res) => {
 });
 
 
-router.post('/search-shops', async (req, res) => {
+router.post('/search-shops', searchRateLimiter, async (req, res) => {
   try {
     const {
       name, // New: for searching by shop name
@@ -285,7 +294,7 @@ function getMatchedCategories(term) {
   return Array.from(matched);
 }
 
-router.post('/discovery-search', async (req, res) => {
+router.post('/discovery-search', searchRateLimiter, async (req, res) => {
   try {
     const { searchTerm, category, userLocation } = req.body;
     const isDefaultView = !searchTerm && !category && !userLocation;
@@ -586,8 +595,13 @@ router.post('/available-now', async (req, res) => {
 
 router.get('/shops/:id', async (req, res) => {
   try {
-    const shop = await ServicesModel.findById(req.params.id);
+    const cacheKey = `shop:${req.params.id}`;
+    const cached = getCached(cacheKey);
+    if (cached) return res.status(200).json(cached);
+
+    const shop = await ServicesModel.findById(req.params.id).lean();
     if (!shop) return res.status(404).json({ message: 'Shop not found' });
+    setCached(cacheKey, shop, 60_000);
     res.status(200).json(shop);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
@@ -596,13 +610,17 @@ router.get('/shops/:id', async (req, res) => {
 
 router.get('/allShops', async (req, res) => {
   try {
-    const shops = await ServicesModel.find({ isArchived: { $ne: true } });
+    const cached = getCached('all-shops');
+    if (cached) return res.status(200).json(cached);
+
+    const shops = await ServicesModel.find({ isArchived: { $ne: true } }).lean();
+    setCached('all-shops', shops, 60_000);
     res.status(200).json(shops);
   } catch (error) {
     console.error('Error fetching shops:', error);
     res.status(500).json({ message: 'Server error fetching shops' });
   }
-})
+});
 
 
 export default router;

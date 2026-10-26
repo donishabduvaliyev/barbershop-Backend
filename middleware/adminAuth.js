@@ -1,9 +1,16 @@
 import jwt from 'jsonwebtoken';
 
 function getAdminJwtSecret() {
-  const secret = process.env.JWT_SECRET || process.env.TELEGRAM_BOT_TOKEN;
+  const secret = process.env.JWT_SECRET;
   if (!secret) {
-    throw new Error('FATAL: Neither JWT_SECRET nor TELEGRAM_BOT_TOKEN is configured.');
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: JWT_SECRET environment variable is required in production.');
+    }
+    const fallback = process.env.TELEGRAM_BOT_TOKEN;
+    if (!fallback) {
+      throw new Error('FATAL: Neither JWT_SECRET nor TELEGRAM_BOT_TOKEN is configured.');
+    }
+    return fallback;
   }
   return secret;
 }

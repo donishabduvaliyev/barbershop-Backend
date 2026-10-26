@@ -6,9 +6,22 @@ import { requireShopAdmin } from '../middleware/adminAuth.js';
 import { uploadImage, deleteImageByUrl } from '../config/r2.js';
 import { rejectBooking } from '../services/bookingActions.js';
 import { dateKeyToRange, toDateKey } from '../utils/dateKey.js';
+import { invalidateShopCache } from '../utils/simpleCache.js';
 
 const router = express.Router();
 router.use(requireShopAdmin);
+
+// Automatically invalidate public cache when admin mutates shop details, services, or staff
+router.use((req, res, next) => {
+  if (req.method !== 'GET') {
+    res.on('finish', () => {
+      if (res.statusCode < 400) {
+        invalidateShopCache(req.shopId);
+      }
+    });
+  }
+  next();
+});
 
 const ACTIVE_STATUSES = ['pending', 'confirmed'];
 

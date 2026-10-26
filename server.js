@@ -39,6 +39,7 @@ import { startWinBackJob } from './jobs/winBack.js';
 import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
 import { startBackupJob } from './jobs/backup.js';
 import { initErrorTracking, captureError } from './config/errorTracking.js';
+import { sanitizeRequest } from './middleware/sanitize.js';
 
 dotenv.config();
 initErrorTracking();
@@ -75,6 +76,14 @@ const allowedOrigins = [
     'http://localhost:8081',
     'http://localhost:19006',
 ].filter(Boolean);
+
+const globalRateLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Too many requests from this IP, please try again in a few minutes.' },
+});
 
 const authRateLimiter = rateLimit({
     windowMs: 5 * 60 * 1000,
@@ -119,10 +128,26 @@ app.use(cors({
 }));
 
 app.use(express.json());
+app.use(sanitizeRequest);
+
+// Health check endpoint for Render zero-downtime deployment & monitoring (never rate-limited)
+app.get('/health', (_req, res) => {
+    const mongoState = mongoose.connection.readyState;
+    const isHealthy = mongoState === 1;
+    res.status(isHealthy ? 200 : 503).json({
+        status: isHealthy ? 'UP' : 'DOWN',
+        uptime: Math.floor(process.uptime()),
+        timestamp: new Date().toISOString(),
+        database: mongoState === 1 ? 'connected' : 'disconnected',
+    });
+});
 
 app.get('/', (req, res) => {
     res.send('Barbershop Booking API is running (Web & Mobile Unified)...');
 });
+
+// Global API Rate Limiter: protects public and private routes from bot swarms and DDoS
+app.use('/api', globalRateLimiter);
 
 // Split Backend Modules:
 // 1. /api/web/*    -> Dedicated Telegram Mini App (Web) module

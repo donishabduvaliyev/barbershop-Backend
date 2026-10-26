@@ -4,9 +4,16 @@ import jwt from 'jsonwebtoken';
 const MOBILE_TOKEN_TTL = '30d';
 
 function getJwtSecret() {
-  const secret = process.env.JWT_SECRET || process.env.TELEGRAM_BOT_TOKEN;
+  const secret = process.env.JWT_SECRET;
   if (!secret) {
-    throw new Error('FATAL: Neither JWT_SECRET nor TELEGRAM_BOT_TOKEN is configured in the environment.');
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: JWT_SECRET environment variable is required in production.');
+    }
+    const fallback = process.env.TELEGRAM_BOT_TOKEN;
+    if (!fallback) {
+      throw new Error('FATAL: Neither JWT_SECRET nor TELEGRAM_BOT_TOKEN is configured in the environment.');
+    }
+    return fallback;
   }
   return secret;
 }
@@ -48,13 +55,30 @@ export function verifyMobileCustomerToken(token) {
 
 // Verifies Telegram WebApp initData per Telegram's documented algorithm:
 // https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
-// Returns the authenticated Telegram user object, or null if invalid/missing.
-export function verifyTelegramInitData(initData, botToken) {
+// Returns the authenticated Telegram user object, or null if invalid/missing/expired.
+export function verifyTelegramInitData(initData, botToken, maxAgeSeconds) {
   if (!initData || !botToken) return null;
 
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   if (!hash) return null;
+
+  // Replay Attack Defense: Check auth_date expiration (default: 24 hours)
+  const maxAge = maxAgeSeconds !== undefined
+    ? maxAgeSeconds
+    : (process.env.TELEGRAM_AUTH_MAX_AGE !== undefined ? Number(process.env.TELEGRAM_AUTH_MAX_AGE) : 86400);
+
+  if (maxAge > 0) {
+    const authDateStr = params.get('auth_date');
+    if (!authDateStr) return null;
+    const authDate = Number(authDateStr);
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Allow up to 60s future clock drift, but reject expired timestamps
+    if (isNaN(authDate) || authDate > nowSec + 60 || nowSec - authDate > maxAge) {
+      return null;
+    }
+  }
+
   params.delete('hash');
 
   const dataCheckString = Array.from(params.keys())
