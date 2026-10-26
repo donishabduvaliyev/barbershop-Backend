@@ -1,7 +1,7 @@
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import Customer from '../models/customer.js';
-import { assertBookableTime, BookingValidationError } from '../utils/bookingTime.js';
+import { assertBookableTime, isWithinWorkingHours, BookingValidationError } from '../utils/bookingTime.js';
 import { toDateKey } from '../utils/dateKey.js';
 
 export class BookingConflictError extends Error {}
@@ -159,26 +159,73 @@ export async function createBooking({
       throw err;
     }
   } else {
-    // "Any available" — capacity is however many staff are named, not off
-    // that day, actually available right now (if today), and (if a service
-    // was picked) actually perform it — or the shop's plain capacity number
-    // for shops that don't track individual staff.
-    const qualifiedStaff = (shop.staff || []).filter((s) => {
-      if (s.daysOff?.includes(requestedDateKey)) return false;
-      if (isToday && s.isAvailableNow === false) return false;
-      if (resolvedService && s.serviceIds?.length > 0) {
-        return s.serviceIds.some((id) => id.toString() === resolvedService._id.toString());
+    // "Any available" — when the shop has staff, auto-assign an open qualified
+    // barber who is working at this hour and not already booked.
+    if (shop.staff?.length > 0) {
+      const qualifiedStaff = shop.staff.filter((s) => {
+        if (s.daysOff?.includes(requestedDateKey)) return false;
+        if (isToday && s.isAvailableNow === false) return false;
+        const staffHours = s.workingHours?.length ? s.workingHours : shop.workingHours;
+        if (staffHours?.length && !isWithinWorkingHours(staffHours, requestedTimeDate)) return false;
+        if (resolvedService && s.serviceIds?.length > 0) {
+          return s.serviceIds.some((id) => id.toString() === resolvedService._id.toString());
+        }
+        return true;
+      });
+
+      if (qualifiedStaff.length === 0) {
+        throw new BookingConflictError('No staff can perform this on that date — please pick another date or service.');
       }
-      return true;
-    });
-    const capacity = shop.staff?.length > 0 ? qualifiedStaff.length : (shop.capacity || 1);
-    if (capacity === 0) {
-      throw new BookingConflictError('No staff can perform this on that date — please pick another date or service.');
-    }
-    booking = new Booking({ ...baseFields, staffId: null, staffName: '' });
-    const claimed = await claimVirtualSlot(booking, capacity);
-    if (!claimed) {
-      throw new BookingConflictError('This time slot is fully booked — please pick another.');
+
+      // Check existing active bookings at this shop and hour
+      const activeBookingsAtTime = await Booking.find({
+        shopId,
+        requestedTime: requestedTimeDate,
+        status: { $in: ACTIVE_STATUSES },
+      }).select('staffId virtualSlot');
+
+      const busyStaffIds = new Set(
+        activeBookingsAtTime.filter((b) => b.staffId).map((b) => b.staffId.toString())
+      );
+      const unassignedCount = activeBookingsAtTime.filter((b) => !b.staffId).length;
+
+      const freeStaff = qualifiedStaff.filter((s) => !busyStaffIds.has(s._id.toString()));
+
+      if (freeStaff.length <= unassignedCount) {
+        throw new BookingConflictError('This time slot is fully booked — please pick another.');
+      }
+
+      // Auto-assign first free qualified barber, retrying on concurrent race
+      let saved = false;
+      for (const candidate of freeStaff) {
+        booking = new Booking({
+          ...baseFields,
+          staffId: candidate._id,
+          staffName: candidate.name,
+        });
+        try {
+          await booking.save();
+          saved = true;
+          break;
+        } catch (err) {
+          if (err.code === 11000) {
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      if (!saved) {
+        throw new BookingConflictError('This time slot is fully booked — please pick another.');
+      }
+    } else {
+      // Staffless shop: claim virtualSlot within shop.capacity
+      const capacity = shop.capacity || 1;
+      booking = new Booking({ ...baseFields, staffId: null, staffName: '' });
+      const claimed = await claimVirtualSlot(booking, capacity);
+      if (!claimed) {
+        throw new BookingConflictError('This time slot is fully booked — please pick another.');
+      }
     }
   }
 

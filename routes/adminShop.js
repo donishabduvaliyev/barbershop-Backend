@@ -458,6 +458,7 @@ router.get('/schedule', async (req, res) => {
       // null means "follows the shop's blanket hours" — the frontend
       // resolves the same fallback the booking logic itself uses.
       workingHours: member.workingHours?.length ? member.workingHours : null,
+      serviceIds: (member.serviceIds || []).map((id) => id.toString()),
       bookings: bookings.filter((b) => b.staffId && String(b.staffId) === String(member._id)).map(bookingSummary),
     }));
 

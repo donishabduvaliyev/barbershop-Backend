@@ -470,9 +470,15 @@ router.get('/service/:id/availability', async (req, res) => {
     res.status(200).json({
       workingHours: shop.workingHours,
       staffCount: shop.staff?.length || 0,
-      // Only meaningful when staffCount is 0 — "how many clients can this
-      // staffless shop serve at the same hour" (see models/shopData.js).
       capacity: shop.capacity || 1,
+      staff: (shop.staff || []).map((s) => ({
+        _id: s._id,
+        name: s.name,
+        daysOff: s.daysOff || [],
+        isAvailableNow: s.isAvailableNow !== false,
+        workingHours: s.workingHours || [],
+        serviceIds: s.serviceIds || [],
+      })),
       bookedSlots,
     });
 

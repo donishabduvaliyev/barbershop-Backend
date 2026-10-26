@@ -2,6 +2,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import Booking from '../models/bookingHistory.js';
 import ServicesModel from '../models/shopData.js';
+import PageView from '../models/pageView.js';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
 import { toDateKey, dateKeyToRange } from '../utils/dateKey.js';
 
@@ -55,14 +56,14 @@ async function windowStats(shopId, from, to) {
 router.get('/overview', async (req, res) => {
   try {
     const shopId = new mongoose.Types.ObjectId(req.shopId);
-    const from = req.query.from ? new Date(req.query.from) : new Date(new Date().setDate(new Date().getDate() - 30));
+    const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const to = req.query.to ? new Date(req.query.to) : new Date();
+    to.setHours(23, 59, 59, 999);
 
+    const dateMatch = { shopId, requestedTime: { $gte: from, $lte: to } };
+    const revenueMatch = { shopId, requestedTime: { $gte: from, $lte: to }, status: REVENUE_STATUS };
 
-const dateMatch = { shopId, requestedTime: { $gte: from } };
-const revenueMatch = { shopId, requestedTime: { $gte: from, $lte: to }, status: REVENUE_STATUS };
-
-    const [statusBreakdown, revenueOverTime, topServices, topStaff, totals] = await Promise.all([
+    const [statusBreakdown, revenueOverTime, topServices, topStaff, totals, peakHours, dayOfWeekAgg, sourceAgg, shopViews] = await Promise.all([
       Booking.aggregate([
         { $match: dateMatch },
         { $group: { _id: '$status', count: { $sum: 1 } } },
@@ -116,21 +117,121 @@ const revenueMatch = { shopId, requestedTime: { $gte: from, $lte: to }, status: 
         { $match: revenueMatch },
         { $group: { _id: null, revenue: { $sum: { $ifNull: ['$price', 0] } }, completedCount: { $sum: 1 } } },
       ]),
+
+      // Peak Hours by hour of day (Tashkent timezone)
+      Booking.aggregate([
+        { $match: dateMatch },
+        {
+          $group: {
+            _id: { $hour: { date: '$requestedTime', timezone: 'Asia/Tashkent' } },
+            count: { $sum: 1 },
+            completed: {
+              $sum: { $cond: [{ $eq: ['$status', REVENUE_STATUS] }, 1, 0] },
+            },
+          },
+        },
+        { $sort: { _id: 1 } },
+        { $project: { _id: 0, hour: '$_id', count: 1, completed: 1 } },
+      ]),
+
+      // Day of week breakdown (1: Sun, 2: Mon, ... 7: Sat)
+      Booking.aggregate([
+        { $match: dateMatch },
+        {
+          $group: {
+            _id: { $dayOfWeek: { date: '$requestedTime', timezone: 'Asia/Tashkent' } },
+            count: { $sum: 1 },
+            revenue: {
+              $sum: {
+                $cond: [{ $eq: ['$status', REVENUE_STATUS] }, { $ifNull: ['$price', 0] }, 0],
+              },
+            },
+          },
+        },
+        { $sort: { _id: 1 } },
+        { $project: { _id: 0, dayOfWeek: '$_id', count: 1, revenue: 1 } },
+      ]),
+
+      // Booking source breakdown: bot, walk-in, phone
+      Booking.aggregate([
+        { $match: dateMatch },
+        {
+          $group: {
+            _id: { $ifNull: ['$source', 'bot'] },
+            count: { $sum: 1 },
+            revenue: {
+              $sum: {
+                $cond: [{ $eq: ['$status', REVENUE_STATUS] }, { $ifNull: ['$price', 0] }, 0],
+              },
+            },
+          },
+        },
+        { $project: { _id: 0, source: '$_id', count: 1, revenue: 1 } },
+      ]),
+
+      // View count for conversion funnel
+      PageView.countDocuments({
+        shopId,
+        type: 'shop_view',
+        createdAt: { $gte: from, $lte: to },
+      }).catch(() => 0),
     ]);
 
+    const countByStatus = Object.fromEntries(statusBreakdown.map((s) => [s.status, s.count]));
     const totalAppointments = statusBreakdown.reduce((sum, s) => sum + s.count, 0);
+    const completedCount = totals[0]?.completedCount || 0;
+    const totalRevenue = totals[0]?.revenue || 0;
+    const cancelledCount = countByStatus.cancelled || 0;
+    const noShowCount = countByStatus['no-show'] || 0;
+
+    const averageTicket = completedCount > 0 ? Math.round(totalRevenue / completedCount) : 0;
+    const completionRate = totalAppointments > 0 ? Math.round((completedCount / totalAppointments) * 100) : 0;
+    const noShowRate = totalAppointments > 0 ? Math.round((noShowCount / totalAppointments) * 100) : 0;
+    const cancellationRate = totalAppointments > 0 ? Math.round((cancelledCount / totalAppointments) * 100) : 0;
+
+    // Day of week mapping (1 = Sun ... 7 = Sat)
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayOfWeekBreakdown = [2, 3, 4, 5, 6, 7, 1].map((dow) => {
+      const match = dayOfWeekAgg.find((d) => d.dayOfWeek === dow);
+      return {
+        dayOfWeek: dow,
+        dayName: dayNames[dow - 1],
+        count: match?.count || 0,
+        revenue: match?.revenue || 0,
+      };
+    });
+
+    const conversionFunnel = {
+      views: shopViews || 0,
+      bookings: totalAppointments,
+      completed: completedCount,
+      viewToBookingRate: (shopViews && shopViews > 0)
+        ? Number(((totalAppointments / shopViews) * 100).toFixed(1))
+        : (totalAppointments > 0 ? 100 : 0),
+      bookingToCompletedRate: totalAppointments > 0
+        ? Number(((completedCount / totalAppointments) * 100).toFixed(1))
+        : 0,
+    };
 
     res.status(200).json({
       range: { from, to },
       totals: {
         appointments: totalAppointments,
-        completed: totals[0]?.completedCount || 0,
-        revenue: totals[0]?.revenue || 0,
+        completed: completedCount,
+        revenue: totalRevenue,
+        averageTicket,
+        completionRate,
+        noShowRate,
+        cancellationRate,
       },
       statusBreakdown,
       revenueOverTime,
       topServices,
       topStaff,
+      peakHours,
+      dayOfWeekBreakdown,
+      sourceBreakdown: sourceAgg,
+      conversionFunnel,
     });
   } catch (error) {
     console.error('Error building admin stats overview:', error);
