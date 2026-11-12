@@ -12,6 +12,14 @@ import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage, LANGUAGE_NAMES } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 import { captureError } from './errorTracking.js';
+import {
+  calculateShopSlotsForDate,
+  buildBookingWidgetHtml,
+  buildTicketWidgetHtml,
+  buildCompactFallbackKeyboard,
+} from '../services/telegramWidgetService.js';
+import { createBooking } from '../services/createBooking.js';
+import { cancelBooking } from '../services/bookingActions.js';
 
 // A customer's chosen (or web-app-inferred) language, looked up fresh per
 // message so a /language change takes effect immediately — unlike a
@@ -33,6 +41,33 @@ const languageKeyboard = {
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: false });
 let pollingStarted = false;
+
+// Direct REST call to Telegram Bot API for methods like sendWidget / answerWidgetQuery
+export async function callTelegramApi(method, payload) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN || token;
+  if (!botToken) return { ok: false, error: 'TELEGRAM_BOT_TOKEN not configured' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// Hook processUpdate to catch Bot API 10.4 widget_query updates and emit them
+if (bot && typeof bot.processUpdate === 'function') {
+  const origProcessUpdate = bot.processUpdate.bind(bot);
+  bot.processUpdate = function(update) {
+    if (update && update.widget_query) {
+      this.emit('widget_query', update.widget_query);
+    }
+    return origProcessUpdate(update);
+  };
+}
 
 export const startBot = () => {
   if (pollingStarted) return;
@@ -174,19 +209,9 @@ bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
 
     const shopMatch = match?.[1]?.match(/^shop_([a-f0-9]{24})$/);
     if (shopMatch) {
-        const shop = await ServicesModel.findById(shopMatch[1]).select('name');
+        const shop = await ServicesModel.findById(shopMatch[1]);
         if (shop) {
-            const shopName = shop.name?.[lang] || shop.name?.en || shop.name?.uz || shop.name?.ru || '';
-            return bot.sendMessage(
-                chatId,
-                t(lang, 'customer.qrShopBody', { shopName: escapeMarkdown(shopName) }),
-                {
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                        inline_keyboard: [[{ text: t(lang, 'customer.openShopButton'), web_app: { url: `${webAppUrl}/service/${shop._id}` } }]],
-                    },
-                }
-            );
+            return await sendInteractiveBookingWidget(chatId, shop);
         }
         // Shop was deleted/bad id — fall through to the normal welcome
         // flow below rather than leaving the customer with nothing.
@@ -355,6 +380,192 @@ export const sendRatingRequest = async (booking) => {
   });
 };
 
+/**
+ * Sends or opens Telegram Bot API 10.4 In-Chat Interactive Booking Widget.
+ * Falls back automatically to rich inline keyboard buttons for older clients.
+ */
+export async function sendInteractiveBookingWidget(chatId, shopOrId, options = {}) {
+  if (typeof chatId === 'number' && chatId <= 0) return false;
+  try {
+    const shop = typeof shopOrId === 'string'
+      ? await ServicesModel.findById(shopOrId)
+      : shopOrId;
+    if (!shop) return false;
+
+    const lang = await getUserLanguage(chatId);
+    const dateStr = options.dateStr || new Date().toISOString().slice(0, 10);
+    const slots = await calculateShopSlotsForDate(shop, dateStr, options.staffId);
+    const staffList = shop.staff || [];
+
+    const widgetHtml = buildBookingWidgetHtml({
+      shop,
+      dateStr,
+      slots,
+      staffList,
+      selectedStaffId: options.staffId || '',
+      selectedTime: options.selectedTime || '',
+      lang,
+    });
+
+    const shopName = shop.name?.[lang] || shop.name?.en || shop.name?.uz || shop.name?.ru || 'SmartChair';
+
+    // Attempt Telegram Bot API 10.4 sendWidget
+    const res = await callTelegramApi('sendWidget', {
+      chat_id: chatId,
+      widget: {
+        html: widgetHtml,
+        height: 380,
+      },
+    });
+
+    if (res && res.ok) {
+      return res;
+    }
+
+    // Fallback: Client does not support sendWidget or API returned error
+    const fallbackKeyboard = buildCompactFallbackKeyboard({
+      shop,
+      dateStr,
+      slots,
+      lang,
+      webAppUrl,
+    });
+
+    const fallbackText = [
+      `💈 *${escapeMarkdown(shopName)}*`,
+      DIVIDER,
+      t(lang, 'customer.widgetFallbackIntro', { shopName: escapeMarkdown(shopName), date: dateStr }),
+    ].join('\n');
+
+    return await bot.sendMessage(chatId, fallbackText, {
+      parse_mode: 'Markdown',
+      reply_markup: fallbackKeyboard,
+    });
+  } catch (err) {
+    console.error('Error in sendInteractiveBookingWidget:', err);
+    captureError(err, { source: 'sendInteractiveBookingWidget', chatId });
+    return false;
+  }
+}
+
+/**
+ * Sends Telegram Bot API 10.4 In-Chat Interactive Confirmed Ticket Widget.
+ * Features live countdown timer, status indicator, and instant cancel/reschedule.
+ * Falls back to rich inline card for older clients.
+ */
+export async function sendInteractiveTicketWidget(chatId, booking) {
+  if (!chatId || Number(chatId) <= 0) return;
+  try {
+    const lang = normalizeLanguage(booking.userLanguage);
+    const widgetHtml = buildTicketWidgetHtml({ booking, lang });
+
+    // Attempt Telegram Bot API 10.4 sendWidget with celebratory effect
+    const res = await callTelegramApi('sendWidget', {
+      chat_id: chatId,
+      message_effect_id: '5046509860389126464',
+      widget: {
+        html: widgetHtml,
+        height: 300,
+      },
+    });
+
+    if (res && res.ok) {
+      return res;
+    }
+
+    // Fallback: Rich inline ticket card
+    const formattedDate = formatDateTime(booking.requestedTime, lang);
+    const fallbackText = [
+      t(lang, 'customer.bookingConfirmedTitle'),
+      DIVIDER,
+      t(lang, 'customer.bookingConfirmedBody', {
+        shopName: escapeMarkdown(booking.shopName),
+        dateTime: formattedDate,
+      }),
+      booking.staffName ? t(lang, 'customer.reminderBarber', { staffName: escapeMarkdown(booking.staffName) }) : null,
+      '',
+      t(lang, 'customer.seeYouThere'),
+    ].filter(Boolean).join('\n');
+
+    const fallbackKeyboard = {
+      inline_keyboard: [
+        [
+          { text: `❌ ${t(lang, 'customer.widgetCancel')}`, callback_data: `wticket_cancel_${booking._id}` },
+          { text: `🚀 ${t(lang, 'customer.openShopButton')}`, web_app: { url: `${webAppUrl}/history` } },
+        ],
+      ],
+    };
+
+    return await bot.sendMessage(chatId, fallbackText, {
+      parse_mode: 'Markdown',
+      reply_markup: fallbackKeyboard,
+    });
+  } catch (err) {
+    console.error('Error in sendInteractiveTicketWidget:', err);
+    captureError(err, { source: 'sendInteractiveTicketWidget', chatId });
+  }
+}
+
+// /book command opens the interactive widget directly for the customer's favorite or latest shop
+bot.onText(/\/book/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const lang = await getUserLanguage(msg.from.id);
+    const user = await User.findOne({ telegramId: String(msg.from.id) }).select('favorites');
+    let targetShop = null;
+
+    if (user?.favorites?.length > 0) {
+      targetShop = await ServicesModel.findById(user.favorites[0]);
+    }
+    if (!targetShop) {
+      const recentBooking = await Booking.findOne({ userTelegramId: String(msg.from.id) }).sort({ createdAt: -1 });
+      if (recentBooking) {
+        targetShop = await ServicesModel.findById(recentBooking.shopId);
+      }
+    }
+    if (!targetShop) {
+      targetShop = await ServicesModel.findOne({ isOperational: true });
+    }
+
+    if (!targetShop) {
+      return bot.sendMessage(chatId, t(lang, 'customer.noShopsAvailable'), {
+        reply_markup: {
+          inline_keyboard: [[{ text: t(lang, 'customer.openAppButton'), web_app: { url: webAppUrl } }]],
+        },
+      });
+    }
+
+    return await sendInteractiveBookingWidget(chatId, targetShop);
+  } catch (err) {
+    console.error('Error in /book handler:', err);
+  }
+});
+
+// /mybookings command shows interactive ticket widget for upcoming appointments
+bot.onText(/\/mybookings/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const lang = await getUserLanguage(msg.from.id);
+    const activeBooking = await Booking.findOne({
+      userTelegramId: String(msg.from.id),
+      status: { $in: ['pending', 'confirmed'] },
+      requestedTime: { $gte: new Date() },
+    }).sort({ requestedTime: 1 });
+
+    if (!activeBooking) {
+      return bot.sendMessage(chatId, t(lang, 'customer.noActiveBookings'), {
+        reply_markup: {
+          inline_keyboard: [[{ text: `⚡️ ${t(lang, 'customer.bookAppointmentButton')}`, callback_data: 'cmd_book' }]],
+        },
+      });
+    }
+
+    return await sendInteractiveTicketWidget(chatId, activeBooking);
+  } catch (err) {
+    console.error('Error in /mybookings handler:', err);
+  }
+});
+
 // customer star-rating flow — the only callback/message handling left on
 // this bot. Confirm/reject/rejection-reason handling now lives entirely on
 // the shop-control bot (config/shopControlBot.js), since only shop owners
@@ -362,10 +573,11 @@ export const sendRatingRequest = async (booking) => {
 bot.on('callback_query', async (callbackQuery) => {
   try {
     const { data, message } = callbackQuery;
-    const [action, bookingId, starsRaw] = data.split('_');
+    const parts = data.split('_');
+    const action = parts[0];
 
     if (action === 'setlang') {
-      const newLang = normalizeLanguage(bookingId); // second segment is the language code here
+      const newLang = normalizeLanguage(parts[1]); // second segment is the language code here
       await User.updateOne({ telegramId: String(callbackQuery.from.id) }, { $set: { language: newLang } }, { upsert: true });
       bot.answerCallbackQuery(callbackQuery.id);
       return bot.editMessageText(t(newLang, 'customer.languageSet'), {
@@ -374,8 +586,83 @@ bot.on('callback_query', async (callbackQuery) => {
       });
     }
 
+    if (action === 'wslot') {
+      // Callback format: wslot_<shopId>_<dateStr>_<hour>
+      const shopId = parts[1];
+      const dateStr = parts[2];
+      const hour = parts[3];
+      const lang = await getUserLanguage(callbackQuery.from.id);
+      const user = await User.findOne({ telegramId: String(callbackQuery.from.id) });
+
+      const reqDate = new Date(dateStr);
+      reqDate.setHours(Number(hour), 0, 0, 0);
+
+      try {
+        const booking = await createBooking({
+          shopId,
+          requestedTime: reqDate,
+          userTelegramId: String(callbackQuery.from.id),
+          userTelegramUsername: callbackQuery.from.username || '',
+          userNumber: user?.phone || '',
+          userTelegramNumber: user?.phone || '',
+          userName: user?.name || `${callbackQuery.from.first_name || ''} ${callbackQuery.from.last_name || ''}`.trim() || 'Client',
+          userLanguage: lang,
+          source: 'telegram_inline',
+        });
+
+        bot.answerCallbackQuery(callbackQuery.id, { text: t(lang, 'customer.widgetBookingSuccess') });
+        await bot.editMessageText(
+          `✅ *${t(lang, 'customer.widgetBookingSuccess')}*\n\n${t(lang, 'customer.bookingConfirmedBody', {
+            shopName: escapeMarkdown(booking.shopName),
+            dateTime: formatDateTime(booking.requestedTime, lang),
+          })}`,
+          {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            parse_mode: 'Markdown',
+          }
+        );
+        return await sendInteractiveTicketWidget(message.chat.id, booking);
+      } catch (err) {
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: err.message || t(lang, 'customer.genericErrorToast'),
+          show_alert: true,
+        });
+      }
+    }
+
+    if (action === 'wticket' && parts[1] === 'cancel') {
+      const targetBookingId = parts[2];
+      const lang = await getUserLanguage(callbackQuery.from.id);
+      try {
+        await cancelBooking(targetBookingId, 'Cancelled by customer via inline button');
+        bot.answerCallbackQuery(callbackQuery.id, { text: t(lang, 'customer.widgetCancelledSuccess') });
+        return bot.editMessageText(`⚫ *${t(lang, 'owner.statusCancelled')}*`, {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          parse_mode: 'Markdown',
+        });
+      } catch (err) {
+        return bot.answerCallbackQuery(callbackQuery.id, {
+          text: err.message || t(lang, 'customer.genericErrorToast'),
+          show_alert: true,
+        });
+      }
+    }
+
+    if (action === 'cmd' && parts[1] === 'book') {
+      bot.answerCallbackQuery(callbackQuery.id);
+      const shop = await ServicesModel.findOne({ isOperational: true });
+      if (shop) {
+        return await sendInteractiveBookingWidget(message.chat.id, shop);
+      }
+      return;
+    }
+
     if (action !== 'rate' && action !== 'staffrate') return;
 
+    const bookingId = parts[1];
+    const starsRaw = parts[2];
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       const lang = await getUserLanguage(callbackQuery.from.id);
@@ -452,6 +739,104 @@ bot.on('callback_query', async (callbackQuery) => {
   } catch (err) {
     console.error('Error handling rating callback:', err);
     bot.answerCallbackQuery(callbackQuery.id, { text: t('uz', 'customer.genericErrorToast') }).catch(() => {});
+  }
+});
+
+// Handle Bot API 10.4 widget_query updates
+bot.on('widget_query', async (query) => {
+  try {
+    const rawData = query.data;
+    const data = typeof rawData === 'string' ? JSON.parse(rawData) : (rawData || {});
+    const userId = query.from?.id;
+    const lang = await getUserLanguage(userId);
+    const chatId = query.message?.chat?.id || userId;
+
+    if (data.action === 'confirm_booking') {
+      const user = await User.findOne({ telegramId: String(userId) });
+      const [hourStr, minStr] = (data.time || '09:00').split(':');
+      const reqDate = new Date(data.date || new Date());
+      reqDate.setHours(Number(hourStr), Number(minStr || 0), 0, 0);
+
+      try {
+        const booking = await createBooking({
+          shopId: data.shopId,
+          requestedTime: reqDate,
+          staffId: data.staffId || null,
+          userTelegramId: String(userId),
+          userTelegramUsername: query.from?.username || '',
+          userNumber: user?.phone || '',
+          userTelegramNumber: user?.phone || '',
+          userName: user?.name || `${query.from?.first_name || ''} ${query.from?.last_name || ''}`.trim() || 'Client',
+          userLanguage: lang,
+          source: 'telegram_widget',
+        });
+
+        await callTelegramApi('answerWidgetQuery', {
+          widget_query_id: query.id,
+          text: t(lang, 'customer.widgetBookingSuccess'),
+        });
+
+        return await sendInteractiveTicketWidget(chatId, booking);
+      } catch (err) {
+        return await callTelegramApi('answerWidgetQuery', {
+          widget_query_id: query.id,
+          text: err.message || t(lang, 'customer.genericErrorToast'),
+          show_alert: true,
+        });
+      }
+    }
+
+    if (data.action === 'change_date' || data.action === 'change_staff') {
+      const shop = await ServicesModel.findById(data.shopId);
+      if (shop) {
+        const slots = await calculateShopSlotsForDate(shop, data.date, data.staffId);
+        const newHtml = buildBookingWidgetHtml({
+          shop,
+          dateStr: data.date,
+          slots,
+          staffList: shop.staff || [],
+          selectedStaffId: data.staffId || '',
+          selectedTime: '',
+          lang,
+        });
+
+        if (query.message?.chat?.id && query.message?.message_id) {
+          await callTelegramApi('editMessageWidgetData', {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            widget: { html: newHtml, height: 380 },
+          });
+        }
+      }
+      return await callTelegramApi('answerWidgetQuery', { widget_query_id: query.id });
+    }
+
+    if (data.action === 'cancel_booking') {
+      await cancelBooking(data.bookingId, 'Cancelled by customer via interactive widget');
+      return await callTelegramApi('answerWidgetQuery', {
+        widget_query_id: query.id,
+        text: t(lang, 'customer.widgetCancelledSuccess'),
+      });
+    }
+
+    if (data.action === 'reschedule_booking') {
+      const booking = await Booking.findById(data.bookingId);
+      await callTelegramApi('answerWidgetQuery', { widget_query_id: query.id });
+      if (booking) {
+        return await sendInteractiveBookingWidget(chatId, booking.shopId);
+      }
+    }
+
+    // Default response for unhandled queries
+    return await callTelegramApi('answerWidgetQuery', { widget_query_id: query.id });
+  } catch (err) {
+    console.error('Error handling widget_query:', err);
+    try {
+      await callTelegramApi('answerWidgetQuery', {
+        widget_query_id: query.id,
+        text: 'Action error',
+      });
+    } catch {}
   }
 });
 

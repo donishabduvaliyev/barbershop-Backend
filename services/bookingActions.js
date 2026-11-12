@@ -4,7 +4,7 @@
 // entry points can never drift out of sync.
 import Booking from '../models/bookingHistory.js';
 import ServicesModel from '../models/shopData.js';
-import { notifyUser, sendRatingRequest } from '../config/telegramBot.js';
+import { notifyUser, sendRatingRequest, sendInteractiveTicketWidget } from '../config/telegramBot.js';
 import { editBookingCard } from '../config/notificationBridge.js';
 import { emitToShop } from '../config/socket.js';
 import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
@@ -41,7 +41,11 @@ export async function confirmBooking(bookingId) {
     '',
     t(userLang, 'customer.seeYouThere'),
   ].join('\n');
-  await notifyUser(booking.userTelegramId, userMessage);
+  try {
+    await sendInteractiveTicketWidget(booking.userTelegramId, booking);
+  } catch (widgetErr) {
+    await notifyUser(booking.userTelegramId, userMessage);
+  }
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusConfirmed'));
   emitToShop(booking.shopId, 'appointment:update', booking);
 
