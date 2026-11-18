@@ -44,7 +44,7 @@ export async function confirmBooking(bookingId) {
   try {
     await sendInteractiveTicketWidget(booking.userTelegramId, booking);
   } catch (widgetErr) {
-    await notifyUser(booking.userTelegramId, userMessage);
+    await notifyUser(booking.userTelegramId, userMessage, { message_effect_id: '5046509860389126464' });
   }
   await editBookingCard(booking, t(normalizeLanguage(booking.ownerLanguage), 'owner.statusConfirmed'));
   emitToShop(booking.shopId, 'appointment:update', booking);

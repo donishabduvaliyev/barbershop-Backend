@@ -584,7 +584,7 @@ export function buildCompactFallbackKeyboard({ shop, dateStr, slots = [], lang =
   const normLang = normalizeLanguage(lang);
   const rows = [];
 
-  // Group slots in rows of 3
+  // Group slots in rows of 3 with native success (green) style
   const availableSlots = slots.filter((s) => s.isAvailable);
   for (let i = 0; i < Math.min(availableSlots.length, 9); i += 3) {
     const chunk = availableSlots.slice(i, i + 3);
@@ -592,16 +592,18 @@ export function buildCompactFallbackKeyboard({ shop, dateStr, slots = [], lang =
       chunk.map((s) => ({
         text: `⚡️ ${s.time}`,
         callback_data: `wslot_${shop._id}_${dateStr}_${s.hour}`,
+        style: 'success',
       }))
     );
   }
 
-  // Mini App launcher row
+  // Mini App launcher row with native primary (blue) style
   if (webAppUrl) {
     rows.push([
       {
         text: `🚀 ${t(normLang, 'customer.openShopButton')}`,
         web_app: { url: `${webAppUrl}/service/${shop._id}` },
+        style: 'primary',
       },
     ]);
   }

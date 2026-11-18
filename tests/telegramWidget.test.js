@@ -10,6 +10,11 @@ import {
   buildCompactFallbackKeyboard,
 } from '../services/telegramWidgetService.js';
 import {
+  formatCustomerConfirmedCardHTML,
+  formatShopOwnerBookingCardHTML,
+  escapeHtml,
+} from '../utils/telegramFormat.js';
+import {
   callTelegramApi,
   sendInteractiveBookingWidget,
   sendInteractiveTicketWidget,
@@ -194,17 +199,81 @@ describe('Telegram Bot API 10.4 Widget Service', () => {
     });
 
     expect(keyboard.inline_keyboard).toBeDefined();
-    // First row should have 3 available slots
+    // First row should have 3 available slots with native success (green) style
     expect(keyboard.inline_keyboard[0].length).toBe(3);
     expect(keyboard.inline_keyboard[0][0].callback_data).toBe(`wslot_${shop._id}_2026-11-15_9`);
+    expect(keyboard.inline_keyboard[0][0].style).toBe('success');
 
-    // Second row should have remaining available slots (13:00)
+    // Second row should have remaining available slots (13:00) with success style
     expect(keyboard.inline_keyboard[1].length).toBe(1);
     expect(keyboard.inline_keyboard[1][0].callback_data).toBe(`wslot_${shop._id}_2026-11-15_13`);
+    expect(keyboard.inline_keyboard[1][0].style).toBe('success');
 
-    // Last row should have Web App launcher
+    // Last row should have Web App launcher with native primary (blue) style
     const lastRow = keyboard.inline_keyboard[keyboard.inline_keyboard.length - 1];
     expect(lastRow[0].web_app.url).toBe(`https://barbershop-telegram-bot.netlify.app/service/${shop._id}`);
+    expect(lastRow[0].style).toBe('primary');
+  });
+
+  it('formatCustomerConfirmedCardHTML generates luxury card with <blockquote expandable> and catalog info without policy', async () => {
+    const shop = await createSampleShop();
+    const booking = await Booking.create({
+      shopId: shop._id,
+      shopName: shop.name.uz,
+      userTelegramId: -201,
+      userName: 'Bobur',
+      userNumber: '+998901234567',
+      staffName: 'Jasur Barber',
+      serviceName: 'Soch turmagi (Fade)',
+      price: 80000,
+      requestedTime: new Date(Date.now() + 3600_000),
+      status: 'confirmed',
+      userLanguage: 'uz',
+    });
+
+    const html = formatCustomerConfirmedCardHTML({ booking, shop, lang: 'uz' });
+    expect(html).toContain('<b>💈 SMARTCHAIR');
+    expect(html).toContain('<blockquote expandable>');
+    expect(html).toContain('</blockquote>');
+    expect(html).toContain('Qirollik Sartaroshxonasi');
+    expect(html).toContain('Namangan, Navoi 12');
+    expect(html).toContain('https://www.google.com/maps?q=41,71.67');
+    expect(html).toContain('+998949827070');
+    expect(html).toContain('Jasur Barber');
+    expect(html).toContain('80,000 UZS');
+    expect(html).toContain('09:00 - 20:00');
+    // Verifies cancellation policy is omitted per user preference
+    expect(html).not.toContain('policy');
+    expect(html).not.toContain('qoidasi');
+  });
+
+  it('formatShopOwnerBookingCardHTML generates structured owner card with <blockquote expandable>', async () => {
+    const shop = await createSampleShop();
+    const booking = await Booking.create({
+      shopId: shop._id,
+      shopName: shop.name.uz,
+      userTelegramId: -202,
+      userName: 'Nodir',
+      userNumber: '+998907654321',
+      userTelegramUsername: 'nodir_dev',
+      staffName: 'Alisher Master',
+      serviceName: 'Soqol tekislash',
+      price: 50000,
+      requestedTime: new Date(Date.now() + 3600_000),
+      status: 'pending',
+      userLanguage: 'uz',
+      ownerLanguage: 'uz',
+    });
+
+    const html = formatShopOwnerBookingCardHTML(booking, null, shop);
+    expect(html).toContain('<b>💈 SMARTCHAIR');
+    expect(html).toContain('<blockquote expandable>');
+    expect(html).toContain('</blockquote>');
+    expect(html).toContain('Nodir');
+    expect(html).toContain('<code>+998907654321</code>');
+    expect(html).toContain('https://t.me/nodir_dev');
+    expect(html).toContain('Alisher Master');
+    expect(html).toContain('50,000 UZS');
   });
 });
 

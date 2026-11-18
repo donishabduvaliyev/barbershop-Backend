@@ -12,7 +12,7 @@ import Booking from '../models/bookingHistory.js';
 import OwnerPreference from '../models/ownerPreference.js';
 import { registerCardEditor } from './notificationBridge.js';
 import { confirmBooking, rejectBooking } from '../services/bookingActions.js';
-import { DIVIDER, formatBookingCard } from '../utils/telegramFormat.js';
+import { DIVIDER, formatBookingCard, formatShopOwnerBookingCardHTML } from '../utils/telegramFormat.js';
 import { notifyUser as notifyCustomerBotUser } from './telegramBot.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
@@ -52,6 +52,18 @@ export const startShopControlBot = () => {
   shopControlBot.startPolling()
     .then(() => console.log('✅ Shop-control bot polling started.'))
     .catch((err) => console.error('❌ Shop-control bot failed to start polling:', err.message));
+};
+
+export const stopShopControlBot = async () => {
+  if (pollingStarted && shopControlBot) {
+    try {
+      await shopControlBot.stopPolling();
+      pollingStarted = false;
+      console.log('🛑 Shop-control bot polling stopped.');
+    } catch (err) {
+      console.error('Error stopping shop-control bot polling:', err.message);
+    }
+  }
 };
 
 shopControlBot.on('polling_error', (err) => {
@@ -305,18 +317,22 @@ export const notifyShopOwnerOfNewBooking = async (booking) => {
     return;
   }
 
+  const cardHtml = formatShopOwnerBookingCardHTML(booking, null, shop);
   const options = {
-    parse_mode: 'Markdown',
+    parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: [
         [
-          { text: t(booking.ownerLanguage, 'owner.confirmButton'), callback_data: `confirm_${booking._id}` },
-          { text: t(booking.ownerLanguage, 'owner.rejectButton'), callback_data: `reject_${booking._id}` },
+          { text: t(booking.ownerLanguage, 'owner.confirmButton'), callback_data: `confirm_${booking._id}`, style: 'success' },
+          { text: t(booking.ownerLanguage, 'owner.rejectButton'), callback_data: `reject_${booking._id}`, style: 'danger' },
+        ],
+        [
+          { text: t(booking.ownerLanguage, 'owner.openDashboardButton'), web_app: { url: `${adminPanelUrl}?shop=${booking.shopId}` }, style: 'primary' },
         ],
       ],
     },
   };
-  const sent = await shopControlBot.sendMessage(shop.ownerTelegramId, formatBookingCard(booking), options);
+  const sent = await shopControlBot.sendMessage(shop.ownerTelegramId, cardHtml, options);
 
   booking.notificationChatId = sent.chat.id;
   booking.notificationMessageId = sent.message_id;
@@ -329,10 +345,11 @@ export const notifyShopOwnerOfNewBooking = async (booking) => {
 // itself imports to run its own button handlers below).
 registerCardEditor(async (booking, statusLine) => {
   if (!booking.notificationChatId || !booking.notificationMessageId) return;
-  await shopControlBot.editMessageText(formatBookingCard(booking, statusLine), {
+  const shop = await ServicesModel.findById(booking.shopId).select('address');
+  await shopControlBot.editMessageText(formatShopOwnerBookingCardHTML(booking, statusLine, shop), {
     chat_id: booking.notificationChatId,
     message_id: booking.notificationMessageId,
-    parse_mode: 'Markdown',
+    parse_mode: 'HTML',
   });
 });
 

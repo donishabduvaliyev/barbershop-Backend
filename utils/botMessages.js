@@ -73,6 +73,7 @@ const DICTIONARY = {
       noActiveBookings: 'You have no upcoming appointments.',
       bookAppointmentButton: 'Book Appointment',
       openAppButton: '🚀 Open SmartChair',
+      viewOnMap: 'View on map',
     },
     owner: {
       openDashboardButton: '🔐 Open Dashboard',
@@ -194,6 +195,7 @@ const DICTIONARY = {
       noActiveBookings: 'У вас нет предстоящих записей.',
       bookAppointmentButton: 'Записаться',
       openAppButton: '🚀 Открыть SmartChair',
+      viewOnMap: 'Открыть на карте',
     },
     owner: {
       openDashboardButton: '🔐 Открыть панель',
@@ -315,6 +317,7 @@ const DICTIONARY = {
       noActiveBookings: 'Sizda faol uchrashuvlar mavjud emas.',
       bookAppointmentButton: 'Band qilish',
       openAppButton: '🚀 SmartChair-ni ochish',
+      viewOnMap: "Xaritada ochish",
     },
     owner: {
       openDashboardButton: '🔐 Boshqaruv panelini ochish',

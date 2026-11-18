@@ -4,6 +4,8 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
     "test": "vitest run"
   },
   "keywords": [],
@@ -13,6 +15,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1117.0",
     "@sentry/node": "^10.74.0",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",

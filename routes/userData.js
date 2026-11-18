@@ -8,6 +8,7 @@ import { editBookingCard } from '../config/notificationBridge.js';
 import { emitToShop, emitToUser } from '../config/socket.js';
 import { requireTelegramAuth } from '../middleware/telegramAuth.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
+import { cancelBooking } from '../services/bookingActions.js';
 
 
 const router = express.Router();
@@ -156,50 +157,20 @@ router.get('/profile/:telegramId', requireTelegramAuth, async (req, res) => {
 router.patch('/bookings/:id/cancel', requireTelegramAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const bookingToCancel = await Booking.findById(id);
+        const booking = await Booking.findOne({ _id: id, userTelegramId: req.telegramUser.id });
 
-        if (!bookingToCancel) {
+        if (!booking) {
             return res.status(404).json({ message: 'Booking not found.' });
         }
 
-        // Only the booking's own owner can cancel it — otherwise any
-        // authenticated Telegram user could cancel anyone else's booking
-        // just by guessing/knowing its id.
-        if (Number(bookingToCancel.userTelegramId) !== Number(req.telegramUser.id)) {
-            return res.status(403).json({ message: 'You can only cancel your own bookings.' });
-        }
-
-        if (!['pending', 'confirmed'].includes(bookingToCancel.status)) {
+        if (!['pending', 'confirmed'].includes(booking.status)) {
             return res.status(400).json({ message: 'This booking can no longer be cancelled.' });
         }
 
-        bookingToCancel.status = 'cancelled';
-        await bookingToCancel.save();
+        const cancelledBooking = await cancelBooking(id, 'Cancelled by client via Web App');
+        emitToShop(cancelledBooking.shopId, 'appointment:update', cancelledBooking);
 
-        // Notify the shop's own owner (not a global admin chat) that their
-        // customer cancelled, and update the original Telegram card in place.
-        try {
-            const shop = await ServicesModel.findById(bookingToCancel.shopId).select('ownerTelegramId');
-            if (shop?.ownerTelegramId) {
-                const formattedTime = new Date(bookingToCancel.requestedTime).toLocaleString();
-                const notificationMessage = [
-                    '⚠️ *Booking Cancelled by Client*',
-                    `*Shop:* ${escapeMarkdown(bookingToCancel.shopName)}`,
-                    `*Client:* ${escapeMarkdown(bookingToCancel.userName || bookingToCancel.userTelegramUsername || 'N/A')}`,
-                    `*Time:* ${formattedTime}`,
-                ].join('\n');
-                await shopControlBot.sendMessage(shop.ownerTelegramId, notificationMessage, { parse_mode: 'Markdown' });
-            }
-            await editBookingCard(bookingToCancel, '⚪️ *CANCELLED BY CLIENT*');
-            emitToShop(bookingToCancel.shopId, 'appointment:update', bookingToCancel);
-        } catch (notificationError) {
-            // Log the error but don't fail the API request.
-            // The user's cancellation was successful even if the owner notification fails.
-            console.error('Failed to send cancellation notification to shop owner:', notificationError);
-        }
-
-        res.status(200).json(bookingToCancel);
-
+        return res.status(200).json(cancelledBooking);
     } catch (error) {
         console.error('Error cancelling booking:', error);
         res.status(500).json({ message: 'Server error while cancelling booking.' });

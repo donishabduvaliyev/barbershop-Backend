@@ -12,12 +12,14 @@ import http from 'http';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import compression from 'compression';
 import { Server } from 'socket.io';
-import { startBot } from './config/telegramBot.js';
-import { startShopControlBot } from './config/shopControlBot.js';
+import { startBot, stopBot } from './config/telegramBot.js';
+import { startShopControlBot, stopShopControlBot } from './config/shopControlBot.js';
 import { verifyAdminToken } from './middleware/adminAuth.js';
 import { verifyTelegramInitData, verifyMobileCustomerToken } from './middleware/telegramAuth.js';
 import { setIO } from './config/socket.js';
+import { validateEnv } from './config/envValidator.js';
 import shopRoutes from './routes/shops.js';
 import userRouter from './routes/userData.js';
 import authRouter from './routes/auth.js';
@@ -43,6 +45,7 @@ import { sanitizeRequest } from './middleware/sanitize.js';
 
 dotenv.config();
 initErrorTracking();
+validateEnv();
 
 // Last-resort safety net: a single failed Telegram API call (e.g. messaging
 // a chat id that was never real, or a user who blocked the bot) must never
@@ -93,6 +96,9 @@ const authRateLimiter = rateLimit({
     message: { message: 'Too many requests, please try again in a few minutes.' },
 });
 
+// Gzip / Deflate Response Compression for high payload speed
+app.use(compression());
+
 // Basic HTTP Security Headers
 app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -130,15 +136,24 @@ app.use(cors({
 app.use(express.json());
 app.use(sanitizeRequest);
 
-// Health check endpoint for Render zero-downtime deployment & monitoring (never rate-limited)
-app.get('/health', (_req, res) => {
+// Health check endpoint for zero-downtime deployment & monitoring (never rate-limited)
+app.get('/health', async (_req, res) => {
     const mongoState = mongoose.connection.readyState;
-    const isHealthy = mongoState === 1;
+    let dbPing = false;
+    if (mongoState === 1 && mongoose.connection.db) {
+        try {
+            await mongoose.connection.db.admin().ping();
+            dbPing = true;
+        } catch {
+            dbPing = false;
+        }
+    }
+    const isHealthy = mongoState === 1 && dbPing;
     res.status(isHealthy ? 200 : 503).json({
         status: isHealthy ? 'UP' : 'DOWN',
         uptime: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
-        database: mongoState === 1 ? 'connected' : 'disconnected',
+        database: mongoState === 1 && dbPing ? 'connected' : 'disconnected',
     });
 });
 
@@ -293,7 +308,7 @@ mongoose.connect(process.env.MONGO_URI, mongooseOptions).then(() => {
     console.error('❌ MongoDB connection error:', err);
 });
 
-// Graceful Shutdown: drains in-flight requests, terminates WebSockets, and disconnects MongoDB cleanly
+// Graceful Shutdown: stops bot pollers, drains in-flight requests, terminates WebSockets, and disconnects MongoDB cleanly
 let isShuttingDown = false;
 async function gracefulShutdown(signal) {
     if (isShuttingDown) return;
@@ -307,6 +322,13 @@ async function gracefulShutdown(signal) {
     shutdownTimeout.unref();
 
     try {
+        // 1. Stop polling Telegram bots immediately to release tokens & prevent 409 Conflict during zero-downtime rolling deploys
+        await Promise.allSettled([
+            stopBot(),
+            stopShopControlBot(),
+        ]);
+        console.log('✅ Telegram bot pollers stopped.');
+
         if (httpServer && httpServer.listening) {
             await new Promise((resolve) => httpServer.close(resolve));
             console.log('✅ HTTP server closed.');

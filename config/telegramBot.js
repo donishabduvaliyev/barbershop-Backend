@@ -8,7 +8,7 @@ import ServicesModel from '../models/shopData.js';
 import MobileAuthSession from '../models/mobileAuthSession.js';
 import { signMobileCustomerToken } from '../middleware/telegramAuth.js';
 import { emitToAuthSession, emitToUser } from './socket.js';
-import { DIVIDER, formatDateTime } from '../utils/telegramFormat.js';
+import { DIVIDER, formatDateTime, formatCustomerConfirmedCardHTML, escapeHtml } from '../utils/telegramFormat.js';
 import { t, normalizeLanguage, LANGUAGE_NAMES } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
 import { captureError } from './errorTracking.js';
@@ -83,6 +83,18 @@ export const startBot = () => {
   bot.startPolling()
     .then(() => console.log('✅ Customer bot polling started.'))
     .catch((err) => console.error('❌ Customer bot failed to start polling:', err.message));
+};
+
+export const stopBot = async () => {
+  if (pollingStarted && bot) {
+    try {
+      await bot.stopPolling();
+      pollingStarted = false;
+      console.log('🛑 Customer bot polling stopped.');
+    } catch (err) {
+      console.error('Error stopping customer bot polling:', err.message);
+    }
+  }
 };
 
 // Without an explicit listener, a 409 (another instance already polling
@@ -332,7 +344,8 @@ export const notifyUser = async (chatId, text, extra = {}) => {
   // "Failed to message Telegram user -1234" for every one of their bookings.
   if (typeof chatId === 'number' && chatId <= 0) return;
   try {
-    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
+    const parse_mode = extra.parse_mode || (text.includes('<') && text.includes('>') ? 'HTML' : 'Markdown');
+    await bot.sendMessage(chatId, text, { parse_mode, ...extra });
   } catch (err) {
     console.error(`Failed to message Telegram user ${chatId}:`, err.message);
     // Deliberately not forwarding `text` — it's the actual message body,
@@ -432,13 +445,13 @@ export async function sendInteractiveBookingWidget(chatId, shopOrId, options = {
     });
 
     const fallbackText = [
-      `💈 *${escapeMarkdown(shopName)}*`,
+      `💈 <b>${escapeHtml(shopName)}</b>`,
       DIVIDER,
-      t(lang, 'customer.widgetFallbackIntro', { shopName: escapeMarkdown(shopName), date: dateStr }),
+      t(lang, 'customer.widgetFallbackIntro', { shopName: `<b>${escapeHtml(shopName)}</b>`, date: dateStr }),
     ].join('\n');
 
     return await bot.sendMessage(chatId, fallbackText, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: fallbackKeyboard,
     });
   } catch (err) {
@@ -473,31 +486,22 @@ export async function sendInteractiveTicketWidget(chatId, booking) {
       return res;
     }
 
-    // Fallback: Rich inline ticket card
-    const formattedDate = formatDateTime(booking.requestedTime, lang);
-    const fallbackText = [
-      t(lang, 'customer.bookingConfirmedTitle'),
-      DIVIDER,
-      t(lang, 'customer.bookingConfirmedBody', {
-        shopName: escapeMarkdown(booking.shopName),
-        dateTime: formattedDate,
-      }),
-      booking.staffName ? t(lang, 'customer.reminderBarber', { staffName: escapeMarkdown(booking.staffName) }) : null,
-      '',
-      t(lang, 'customer.seeYouThere'),
-    ].filter(Boolean).join('\n');
+    // Fallback: Rich inline luxury card with <blockquote expandable> and colored action buttons
+    const shop = await ServicesModel.findById(booking.shopId);
+    const fallbackText = formatCustomerConfirmedCardHTML({ booking, shop, lang });
 
     const fallbackKeyboard = {
       inline_keyboard: [
         [
-          { text: `❌ ${t(lang, 'customer.widgetCancel')}`, callback_data: `wticket_cancel_${booking._id}` },
-          { text: `🚀 ${t(lang, 'customer.openShopButton')}`, web_app: { url: `${webAppUrl}/history` } },
+          { text: `❌ ${t(lang, 'customer.widgetCancel')}`, callback_data: `wticket_cancel_${booking._id}`, style: 'danger' },
+          { text: `🚀 ${t(lang, 'customer.openShopButton')}`, web_app: { url: `${webAppUrl}/history` }, style: 'primary' },
         ],
       ],
     };
 
     return await bot.sendMessage(chatId, fallbackText, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
+      message_effect_id: '5046509860389126464',
       reply_markup: fallbackKeyboard,
     });
   } catch (err) {
@@ -555,7 +559,12 @@ bot.onText(/\/mybookings/, async (msg) => {
     if (!activeBooking) {
       return bot.sendMessage(chatId, t(lang, 'customer.noActiveBookings'), {
         reply_markup: {
-          inline_keyboard: [[{ text: `⚡️ ${t(lang, 'customer.bookAppointmentButton')}`, callback_data: 'cmd_book' }]],
+          inline_keyboard: [
+            [
+              { text: `⚡️ ${t(lang, 'customer.bookAppointmentButton')}`, callback_data: 'cmd_book', style: 'success' },
+              { text: `🚀 ${t(lang, 'customer.openAppButton')}`, web_app: { url: webAppUrl }, style: 'primary' },
+            ],
+          ],
         },
       });
     }
@@ -611,17 +620,21 @@ bot.on('callback_query', async (callbackQuery) => {
         });
 
         bot.answerCallbackQuery(callbackQuery.id, { text: t(lang, 'customer.widgetBookingSuccess') });
-        await bot.editMessageText(
-          `✅ *${t(lang, 'customer.widgetBookingSuccess')}*\n\n${t(lang, 'customer.bookingConfirmedBody', {
-            shopName: escapeMarkdown(booking.shopName),
-            dateTime: formatDateTime(booking.requestedTime, lang),
-          })}`,
-          {
-            chat_id: message.chat.id,
-            message_id: message.message_id,
-            parse_mode: 'Markdown',
-          }
-        );
+        const shop = await ServicesModel.findById(booking.shopId);
+        const cardHtml = formatCustomerConfirmedCardHTML({ booking, shop, lang });
+        await bot.editMessageText(cardHtml, {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: `❌ ${t(lang, 'customer.widgetCancel')}`, callback_data: `wticket_cancel_${booking._id}`, style: 'danger' },
+                { text: `🚀 ${t(lang, 'customer.openShopButton')}`, web_app: { url: `${webAppUrl}/history` }, style: 'primary' },
+              ],
+            ],
+          },
+        });
         return await sendInteractiveTicketWidget(message.chat.id, booking);
       } catch (err) {
         return bot.answerCallbackQuery(callbackQuery.id, {
@@ -637,10 +650,18 @@ bot.on('callback_query', async (callbackQuery) => {
       try {
         await cancelBooking(targetBookingId, 'Cancelled by customer via inline button');
         bot.answerCallbackQuery(callbackQuery.id, { text: t(lang, 'customer.widgetCancelledSuccess') });
-        return bot.editMessageText(`⚫ *${t(lang, 'owner.statusCancelled')}*`, {
+        return bot.editMessageText(`⚫ <b>${t(lang, 'owner.statusCancelled')}</b>`, {
           chat_id: message.chat.id,
           message_id: message.message_id,
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: `⚡️ ${t(lang, 'customer.bookAppointmentButton')}`, callback_data: 'cmd_book', style: 'success' },
+                { text: `🚀 ${t(lang, 'customer.openAppButton')}`, web_app: { url: webAppUrl }, style: 'primary' },
+              ],
+            ],
+          },
         });
       } catch (err) {
         return bot.answerCallbackQuery(callbackQuery.id, {

@@ -51,6 +51,72 @@ export const formatDate = (date, lang = 'uz') => {
   return `${month} ${day}, ${year}`;
 };
 
+export const escapeHtml = (str) => {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+// Generates luxury customer appointment ticket HTML with native <blockquote expandable>
+export const formatCustomerConfirmedCardHTML = ({ booking, shop, lang = 'uz' }) => {
+  const safeLang = normalizeLanguage(lang);
+  const formattedDate = formatDateTime(booking.requestedTime, safeLang);
+  const mapsUrl = shop?.location?.coordinates?.length === 2
+    ? `https://www.google.com/maps?q=${shop.location.coordinates[1]},${shop.location.coordinates[0]}`
+    : '';
+
+  const workingHours = shop?.workingHours?.[0];
+  const hoursText = workingHours ? `${workingHours.from} - ${workingHours.to}` : '';
+
+  const lines = [
+    `<b>💈 SMARTCHAIR · ${t(safeLang, 'customer.bookingConfirmedTitle')}</b>`,
+    `🟢 <b>${t(safeLang, 'customer.widgetTicketConfirmed')}</b> — 🗓 <b>${formattedDate}</b>`,
+    DIVIDER,
+    `<blockquote expandable>`,
+    `🏪 <b>${t(safeLang, 'owner.cardShop')}</b> ${escapeHtml(booking.shopName)}`,
+    shop?.address ? `📍 <b>Manzil:</b> ${escapeHtml(shop.address)}${mapsUrl ? ` (<a href="${mapsUrl}">${t(safeLang, 'customer.viewOnMap')}</a>)` : ''}` : '',
+    shop?.phone ? `📞 <b>${t(safeLang, 'owner.cardPhone')}</b> ${escapeHtml(shop.phone)}` : '',
+    booking.staffName ? `💇 <b>${t(safeLang, 'owner.cardBarber')}</b> ${escapeHtml(booking.staffName)}` : '',
+    booking.serviceName ? `✂️ <b>${t(safeLang, 'owner.cardService')}</b> ${escapeHtml(booking.serviceName)}${booking.price ? ` — <b>${Number(booking.price).toLocaleString()} UZS</b>` : ''}` : '',
+    hoursText ? `⏰ <b>Ish vaqti:</b> ${hoursText}` : '',
+    `</blockquote>`,
+    '',
+    `<i>${t(safeLang, 'customer.seeYouThere')}</i>`,
+  ].filter(Boolean);
+
+  return lines.join('\n');
+};
+
+// Generates luxury shop-owner notification card HTML with native <blockquote expandable>
+export const formatShopOwnerBookingCardHTML = (booking, statusLine, shop = null) => {
+  const lang = normalizeLanguage(booking.ownerLanguage);
+  const telegramContact = booking.userTelegramUsername
+    ? `<a href="https://t.me/${escapeHtml(booking.userTelegramUsername)}">@${escapeHtml(booking.userTelegramUsername)}</a>`
+    : t(lang, 'owner.cardNoTelegramUsername');
+
+  const lines = [
+    `<b>💈 SMARTCHAIR · ${t(lang, 'owner.cardTitle')}</b>`,
+    statusLine ? statusLine : `🟡 <b>${t(lang, 'customer.widgetTicketPending')}</b>`,
+    DIVIDER,
+    `<blockquote expandable>`,
+    `👤 <b>${t(lang, 'owner.cardClient')}</b> ${escapeHtml(booking.userName)}`,
+    `📞 <b>${t(lang, 'owner.cardPhone')}</b> <code>${escapeHtml(booking.userNumber)}</code>`,
+    `🔗 <b>${t(lang, 'owner.cardTelegram')}</b> ${telegramContact}`,
+    `🗓 <b>${t(lang, 'owner.cardTime')}</b> <b>${formatDateTime(booking.requestedTime, lang)}</b>`,
+    `🏪 <b>${t(lang, 'owner.cardShop')}</b> ${escapeHtml(booking.shopName)}`,
+    booking.staffName ? `💇 <b>${t(lang, 'owner.cardBarber')}</b> ${escapeHtml(booking.staffName)}` : '',
+    booking.serviceName ? `✂️ <b>${t(lang, 'owner.cardService')}</b> ${escapeHtml(booking.serviceName)}${booking.price ? ` — <b>${Number(booking.price).toLocaleString()} UZS</b>` : ''}` : '',
+    shop?.address ? `📍 <b>Filial:</b> ${escapeHtml(shop.address)}` : '',
+    `</blockquote>`,
+  ].filter(Boolean);
+
+  return lines.join('\n');
+};
+
 // Single source of truth for the shop-owner-facing booking card, reused for
 // the initial post and every subsequent status edit so the layout never
 // drifts. Uses booking.ownerLanguage (snapshotted once — see
