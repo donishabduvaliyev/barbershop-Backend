@@ -64,9 +64,19 @@ export async function confirmBooking(bookingId) {
 // owner's just-made confirmation back to rejected. Passing
 // fromStatuses:['pending'] makes the sweep's own atomic check re-verify
 // "still actually pending" at the moment it acts, not just when it looked.
+async function assertUnpaidBeforeCancellation(bookingId) {
+  const existing = await Booking.findById(bookingId).select('isPaid paidAmount');
+  if (existing && (existing.isPaid || (existing.paidAmount || 0) > 0)) {
+    const err = new Error('Cannot cancel, reject, or mark no-show on a paid booking. Record a refund/payout in the Cashier Register first.');
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
 export async function rejectBooking(bookingId, reason, { fromStatuses = ['pending', 'confirmed'] } = {}) {
+  await assertUnpaidBeforeCancellation(bookingId);
   const booking = await Booking.findOneAndUpdate(
-    { _id: bookingId, status: { $in: fromStatuses } },
+    { _id: bookingId, status: { $in: fromStatuses }, isPaid: { $ne: true }, paidAmount: { $not: { $gt: 0 } } },
     { $set: { status: 'rejected', rejectionReason: reason } },
     { new: true }
   );
@@ -120,8 +130,9 @@ export async function completeBooking(bookingId) {
 // 'completed' (caught after). No customer notification — they already know
 // they didn't show up.
 export async function markNoShow(bookingId) {
+  await assertUnpaidBeforeCancellation(bookingId);
   const booking = await Booking.findOneAndUpdate(
-    { _id: bookingId, status: { $in: ['confirmed', 'completed'] } },
+    { _id: bookingId, status: { $in: ['confirmed', 'completed'] }, isPaid: { $ne: true }, paidAmount: { $not: { $gt: 0 } } },
     { $set: { status: 'no-show' } },
     { new: true }
   );
@@ -139,10 +150,11 @@ export async function markNoShow(bookingId) {
 // change on the shop's end, not something that needs explaining the way a
 // rejection does).
 export async function cancelBooking(bookingId, reason) {
+  await assertUnpaidBeforeCancellation(bookingId);
   const update = { status: 'cancelled' };
   if (reason) update.rejectionReason = reason;
   const booking = await Booking.findOneAndUpdate(
-    { _id: bookingId, status: { $in: ['pending', 'confirmed'] } },
+    { _id: bookingId, status: { $in: ['pending', 'confirmed'] }, isPaid: { $ne: true }, paidAmount: { $not: { $gt: 0 } } },
     { $set: update },
     { new: true }
   );

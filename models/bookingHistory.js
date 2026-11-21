@@ -34,6 +34,7 @@ const BookingSchema = new Schema({
   ownerLanguage: { type: String, enum: ['en', 'ru', 'uz'], default: 'uz' },
   staffId: { type: Schema.Types.ObjectId, default: null },
   staffName: { type: String, default: '' },
+  staffCommission: { type: Number, default: null },
   // Only set for "any available" bookings (staffId: null) — an atomically
   // claimed number in [0, shop.capacity) that makes those bookings
   // race-proof the same way the staffId index does for specific-staff ones.

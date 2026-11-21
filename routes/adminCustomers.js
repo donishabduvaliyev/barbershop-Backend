@@ -129,6 +129,9 @@ router.get('/', async (req, res) => {
 router.get('/:telegramId', async (req, res) => {
   try {
     const telegramId = Number(req.params.telegramId);
+    if (!Number.isFinite(telegramId)) {
+      return res.status(400).json({ message: 'Invalid telegramId' });
+    }
     const bookings = await Booking.find({ shopId: req.shopId, userTelegramId: telegramId }).sort({ requestedTime: -1 });
     const customerDoc = await Customer.findOne({ shopId: req.shopId, telegramId });
     if (bookings.length === 0 && !customerDoc) {
@@ -147,6 +150,7 @@ router.get('/:telegramId', async (req, res) => {
       visitCount: completed.length,
       totalSpent: completed.reduce((sum, b) => sum + (b.price || 0), 0),
       lastVisit: completed[0]?.requestedTime || null,
+      firstVisit: completed[completed.length - 1]?.requestedTime || null,
       favoriteServices: topN(completed.map((b) => b.serviceName), 3),
       preferredStaff: topN(completed.map((b) => b.staffName), 1)[0] || null,
       notes: customerDoc?.notes || note?.notes || '',

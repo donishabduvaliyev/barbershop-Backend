@@ -1,6 +1,7 @@
 import WaitlistEntry from '../models/waitlistEntry.js';
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
+import Customer from '../models/customer.js';
 import { toDateKey } from '../utils/dateKey.js';
 import { emitToShop, emitToUser } from '../config/socket.js';
 import { notifyUser } from '../config/telegramBot.js';
@@ -9,6 +10,15 @@ import { isValidObjectId, sanitizeString } from '../utils/validate.js';
 import { generateSyntheticTelegramId } from '../utils/syntheticCustomerId.js';
 
 const FINALIZED_STATUSES = ['completed', 'cancelled', 'no_show'];
+
+function normalizePhone(raw) {
+  const cleaned = sanitizeString(raw, 30);
+  if (!cleaned) return '';
+  const digits = cleaned.replace(/\D/g, '');
+  if (digits.length === 9) return `+998${digits}`;
+  if (digits.length === 12 && digits.startsWith('998')) return `+${digits}`;
+  return cleaned;
+}
 
 /**
  * Computes unified wait estimate factoring in BOTH live walk-in queue
@@ -95,6 +105,32 @@ export async function getPublicWaitlistSummary(shopId) {
   };
 }
 
+async function resolvePersistentCustomerTelegramId(shopId, entry) {
+  if (entry.telegramId && entry.telegramId > 0) {
+    return entry.telegramId;
+  }
+  const existingCustomer = await Customer.findOne({
+    shopId,
+    number: entry.customerPhone,
+  }).select('telegramId');
+  if (existingCustomer?.telegramId) {
+    return existingCustomer.telegramId;
+  }
+
+  const syntheticId = generateSyntheticTelegramId();
+  try {
+    await Customer.create({
+      shopId,
+      telegramId: syntheticId,
+      name: entry.customerName,
+      number: entry.customerPhone,
+    });
+  } catch {
+    // Ignore rare concurrent upsert race
+  }
+  return syntheticId;
+}
+
 /**
  * Synchronizes a walk-in queue entry into BookingData (source: 'walk-in')
  * so occupied chairs block online slots and completed walk-ins feed
@@ -117,13 +153,19 @@ async function syncWalkInToBooking(entry, shop, targetStatus) {
     return null;
   }
 
-  const requestedTime = new Date();
-  requestedTime.setMinutes(0, 0, 0);
+  const requestedTime = new Date(entry.seatedAt || entry.joinedAt || Date.now());
+  requestedTime.setSeconds(0, 0);
 
   const shopDisplayName = shop?.name?.en || shop?.name?.uz || shop?.name?.ru || 'Salon';
-  const userTelegramId = entry.telegramId && entry.telegramId > 0
-    ? entry.telegramId
-    : generateSyntheticTelegramId();
+  const userTelegramId = await resolvePersistentCustomerTelegramId(shop._id, entry);
+
+  let staffCommission = null;
+  if (entry.staffId && Array.isArray(shop.staff)) {
+    const staffObj = shop.staff.find((s) => String(s._id) === String(entry.staffId));
+    if (staffObj && typeof staffObj.commission === 'number') {
+      staffCommission = staffObj.commission;
+    }
+  }
 
   const bookingDoc = {
     shopId: shop._id,
@@ -135,6 +177,7 @@ async function syncWalkInToBooking(entry, shop, targetStatus) {
     status: targetStatus,
     staffId: entry.staffId || null,
     staffName: entry.staffName || '',
+    staffCommission,
     serviceId: entry.serviceId || null,
     serviceName: entry.serviceName || '',
     price: typeof entry.price === 'number' ? entry.price : null,
@@ -142,17 +185,17 @@ async function syncWalkInToBooking(entry, shop, targetStatus) {
     notes: entry.notes || '',
   };
 
+  // Preserve staffId across same-hour walk-ins by advancing 1 minute on exact timestamp collision
   let created = null;
-  try {
-    created = await Booking.create(bookingDoc);
-  } catch (err) {
-    // If a confirmed booking already occupies that exact staff+hour index,
-    // fall back to virtualSlot so the walk-in record is still logged cleanly.
-    if (err.code === 11000) {
-      bookingDoc.staffId = null;
-      bookingDoc.virtualSlot = Math.floor(Math.random() * 1000) + 10;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
       created = await Booking.create(bookingDoc);
-    } else {
+      break;
+    } catch (err) {
+      if (err.code === 11000 && attempt < 14) {
+        bookingDoc.requestedTime = new Date(bookingDoc.requestedTime.getTime() + 60_000);
+        continue;
+      }
       throw err;
     }
   }
@@ -172,11 +215,23 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
   }
 
   const customerName = sanitizeString(data?.customerName, 120);
-  const customerPhone = sanitizeString(data?.customerPhone, 30);
+  const customerPhone = normalizePhone(data?.customerPhone);
 
   if (!customerName || !customerPhone) {
     const err = new Error('customerName and customerPhone are required');
     err.statusCode = 400;
+    throw err;
+  }
+
+  // Block banned customers from bypassing booking ban via walk-in waitlist
+  const blockedCustomer = await Customer.findOne({
+    shopId,
+    number: customerPhone,
+    isBlocked: true,
+  }).select('_id');
+  if (blockedCustomer) {
+    const err = new Error('This customer is currently blocked from joining the queue at this shop.');
+    err.statusCode = 403;
     throw err;
   }
 
@@ -393,6 +448,12 @@ export async function updateWaitlistStatus(shopId, entryId, nextStatus) {
     throw err;
   }
 
+  if (entry.status === 'in_chair' && nextStatus === 'called') {
+    const err = new Error('Cannot move an in-chair client back to called');
+    err.statusCode = 400;
+    throw err;
+  }
+
   entry.status = nextStatus;
   if (nextStatus === 'called') entry.calledAt = new Date();
   if (nextStatus === 'in_chair') entry.seatedAt = new Date();
@@ -400,7 +461,7 @@ export async function updateWaitlistStatus(shopId, entryId, nextStatus) {
 
   await entry.save();
 
-  const shop = await ServicesModel.findById(shopId).select('name');
+  const shop = await ServicesModel.findById(shopId).select('name staff');
 
   // Synchronize with BookingData so appointments, availability, stats, payroll & CRM stay 100% unified
   if (shop) {
@@ -408,8 +469,10 @@ export async function updateWaitlistStatus(shopId, entryId, nextStatus) {
       await syncWalkInToBooking(entry, shop, 'confirmed');
     } else if (nextStatus === 'completed') {
       await syncWalkInToBooking(entry, shop, 'completed');
-    } else if (nextStatus === 'cancelled' || nextStatus === 'no_show') {
+    } else if (nextStatus === 'cancelled') {
       await syncWalkInToBooking(entry, shop, 'cancelled');
+    } else if (nextStatus === 'no_show') {
+      await syncWalkInToBooking(entry, shop, 'no-show');
     }
   }
 

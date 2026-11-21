@@ -597,6 +597,16 @@ bot.on('callback_query', async (callbackQuery) => {
       });
     }
 
+    if (data.startsWith('book_shop_')) {
+      const targetShopId = data.slice('book_shop_'.length);
+      await bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const shop = await ServicesModel.findById(targetShopId);
+      if (shop) {
+        return await sendInteractiveBookingWidget(message.chat.id, shop);
+      }
+      return;
+    }
+
     if (action === 'wslot') {
       // Callback format: wslot_<shopId>_<dateStr>_<hour>
       const shopId = parts[1];

@@ -149,7 +149,9 @@ export async function createBooking({
     // A specific barber was requested — the partial unique index on
     // {shopId, staffId, requestedTime} is what actually prevents two
     // people booking the same barber/slot at once.
-    booking = new Booking({ ...baseFields, staffId: resolvedStaffId, staffName: resolvedStaffName });
+    const selectedStaffObj = shop.staff?.find((s) => String(s._id) === String(resolvedStaffId));
+    const staffCommission = typeof selectedStaffObj?.commission === 'number' ? selectedStaffObj.commission : null;
+    booking = new Booking({ ...baseFields, staffId: resolvedStaffId, staffName: resolvedStaffName, staffCommission });
     try {
       await booking.save();
     } catch (err) {
@@ -202,6 +204,7 @@ export async function createBooking({
           ...baseFields,
           staffId: candidate._id,
           staffName: candidate.name,
+          staffCommission: typeof candidate.commission === 'number' ? candidate.commission : null,
         });
         try {
           await booking.save();

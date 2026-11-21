@@ -141,28 +141,26 @@ export async function recordTransaction(shopId, data) {
     throw err;
   }
 
-  let linkedBooking = null;
+  let updatedBooking = null;
   if (data.bookingId) {
-    linkedBooking = await Booking.findOne({ _id: data.bookingId, shopId });
+    const linkedBooking = await Booking.findOne({ _id: data.bookingId, shopId });
     if (!linkedBooking) {
       const err = new Error('Booking not found for this shop');
       err.statusCode = 404;
       throw err;
     }
 
-    if (['cancelled', 'rejected', 'no-show'].includes(linkedBooking.status)) {
-      const err = new Error(`Cannot record payment for a ${linkedBooking.status} booking`);
-      err.statusCode = 400;
-      throw err;
-    }
-
     if (data.type === 'service_payment') {
+      if (['cancelled', 'rejected', 'no-show'].includes(linkedBooking.status)) {
+        const err = new Error(`Cannot record payment for a ${linkedBooking.status} booking`);
+        err.statusCode = 400;
+        throw err;
+      }
       if (linkedBooking.isPaid) {
         const err = new Error('This appointment is already fully paid');
         err.statusCode = 409;
         throw err;
       }
-
       if (typeof linkedBooking.price === 'number' && linkedBooking.price > 0) {
         const remainingDue = Math.max(0, linkedBooking.price - (linkedBooking.paidAmount || 0));
         if (amount > remainingDue) {
@@ -171,6 +169,84 @@ export async function recordTransaction(shopId, data) {
           throw err;
         }
       }
+
+      // Atomic conditional update prevents concurrent split-payment race conditions
+      updatedBooking = await Booking.findOneAndUpdate(
+        {
+          _id: data.bookingId,
+          shopId,
+          status: { $nin: ['cancelled', 'rejected', 'no-show'] },
+          isPaid: { $ne: true },
+          $or: [
+            { price: null },
+            { price: { $lte: 0 } },
+            { $expr: { $lte: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, amount] }, '$price'] } },
+          ],
+        },
+        [
+          {
+            $set: {
+              paidAmount: { $add: [{ $ifNull: ['$paidAmount', 0] }, amount] },
+              price: {
+                $cond: [
+                  { $or: [{ $eq: ['$price', null] }, { $lte: ['$price', 0] }] },
+                  { $add: [{ $ifNull: ['$paidAmount', 0] }, amount] },
+                  '$price',
+                ],
+              },
+              isPaid: {
+                $cond: [
+                  { $or: [{ $eq: ['$price', null] }, { $lte: ['$price', 0] }] },
+                  true,
+                  { $gte: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, amount] }, '$price'] },
+                ],
+              },
+              paidAt: {
+                $cond: [
+                  {
+                    $or: [
+                      { $eq: ['$price', null] },
+                      { $lte: ['$price', 0] },
+                      { $gte: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, amount] }, '$price'] },
+                    ],
+                  },
+                  new Date(),
+                  '$paidAt',
+                ],
+              },
+              paymentMethod: {
+                $cond: [
+                  { $or: [{ $eq: [{ $ifNull: ['$paymentMethod', ''] }, ''] }, { $eq: ['$paymentMethod', paymentMethod] }] },
+                  paymentMethod,
+                  'split',
+                ],
+              },
+            },
+          },
+        ],
+        { new: true }
+      );
+
+      if (!updatedBooking) {
+        const err = new Error('Payment rejected due to concurrent payment or already paid status');
+        err.statusCode = 409;
+        throw err;
+      }
+    } else if (data.type === 'payout' || data.type === 'expense') {
+      // Refund / reversal against a booking unlocks it for cancellation
+      updatedBooking = await Booking.findOneAndUpdate(
+        { _id: data.bookingId, shopId },
+        [
+          {
+            $set: {
+              paidAmount: { $max: [0, { $subtract: [{ $ifNull: ['$paidAmount', 0] }, amount] }] },
+              isPaid: false,
+              paidAt: null,
+            },
+          },
+        ],
+        { new: true }
+      );
     }
   }
 
@@ -189,24 +265,8 @@ export async function recordTransaction(shopId, data) {
     recordedBy: data.recordedBy || null,
   });
 
-  if (linkedBooking && data.type === 'service_payment') {
-    const newPaidAmount = (linkedBooking.paidAmount || 0) + amount;
-    const isNowFullyPaid = typeof linkedBooking.price === 'number' && linkedBooking.price > 0
-      ? newPaidAmount >= linkedBooking.price
-      : true;
-
-    linkedBooking.paidAmount = newPaidAmount;
-    linkedBooking.isPaid = isNowFullyPaid;
-    if (isNowFullyPaid) {
-      linkedBooking.paidAt = new Date();
-    }
-    if (!linkedBooking.paymentMethod) {
-      linkedBooking.paymentMethod = paymentMethod;
-    } else if (linkedBooking.paymentMethod !== paymentMethod) {
-      linkedBooking.paymentMethod = 'split';
-    }
-    await linkedBooking.save();
-    emitToShop(shopId, 'appointment:update', linkedBooking);
+  if (updatedBooking) {
+    emitToShop(shopId, 'appointment:update', updatedBooking);
   }
 
   return tx;

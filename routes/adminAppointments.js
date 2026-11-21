@@ -199,7 +199,7 @@ router.patch('/:id/reject', async (req, res) => {
     res.status(200).json(booking);
   } catch (error) {
     console.error('Error rejecting appointment:', error);
-    res.status(500).json({ message: 'Server error rejecting appointment.' });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error rejecting appointment.' });
   }
 });
 
@@ -225,7 +225,7 @@ router.patch('/:id/no-show', async (req, res) => {
     res.status(200).json(booking);
   } catch (error) {
     console.error('Error marking appointment no-show:', error);
-    res.status(500).json({ message: 'Server error marking appointment no-show.' });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error marking appointment no-show.' });
   }
 });
 
@@ -240,7 +240,7 @@ router.patch('/:id/cancel', async (req, res) => {
     res.status(200).json(booking);
   } catch (error) {
     console.error('Error cancelling appointment:', error);
-    res.status(500).json({ message: 'Server error cancelling appointment.' });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error cancelling appointment.' });
   }
 });
 

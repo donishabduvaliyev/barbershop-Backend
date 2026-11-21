@@ -338,13 +338,31 @@ router.delete('/services/:serviceId', async (req, res) => {
 
 router.post('/staff', async (req, res) => {
   try {
-    const { name, title, photo } = req.body;
+    const { name, title, photo, commission, serviceIds, workingHours } = req.body;
     if (!name) return res.status(400).json({ message: 'name is required.' });
 
     const shop = await ServicesModel.findById(req.shopId);
     if (!shop) return res.status(404).json({ message: 'Shop not found.' });
 
-    shop.staff.push({ name, title: title || '', photo: photo || '' });
+    const newStaff = {
+      name,
+      title: title || '',
+      photo: photo || '',
+    };
+    if (commission !== undefined && commission !== null && commission !== '') {
+      const c = Number(commission);
+      if (Number.isFinite(c) && c >= 0 && c <= 100) {
+        newStaff.commission = c;
+      }
+    }
+    if (Array.isArray(serviceIds)) {
+      newStaff.serviceIds = serviceIds;
+    }
+    if (Array.isArray(workingHours)) {
+      newStaff.workingHours = workingHours;
+    }
+
+    shop.staff.push(newStaff);
     await shop.save();
     res.status(201).json(shop.staff);
   } catch (error) {
