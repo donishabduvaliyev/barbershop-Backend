@@ -9,6 +9,7 @@ import {
   buildTicketWidgetHtml,
   buildCompactFallbackKeyboard,
 } from '../services/telegramWidgetService.js';
+import { toDateKey } from '../utils/dateKey.js';
 import {
   formatCustomerConfirmedCardHTML,
   formatShopOwnerBookingCardHTML,
@@ -77,7 +78,7 @@ describe('Telegram Bot API 10.4 Widget Service', () => {
     const shop = await createSampleShop();
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const dateStr = tomorrow.toISOString().slice(0, 10);
+    const dateStr = toDateKey(tomorrow);
 
     // No bookings yet -> all hours from 09:00 to 19:00 should be open
     const slots = await calculateShopSlotsForDate(shop, dateStr);

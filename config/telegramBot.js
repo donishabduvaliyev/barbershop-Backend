@@ -20,6 +20,8 @@ import {
 } from '../services/telegramWidgetService.js';
 import { createBooking } from '../services/createBooking.js';
 import { cancelBooking } from '../services/bookingActions.js';
+import WaitlistEntry from '../models/waitlistEntry.js';
+import { toDateKey } from '../utils/dateKey.js';
 
 // A customer's chosen (or web-app-inferred) language, looked up fresh per
 // message so a /language change takes effect immediately — unlike a
@@ -858,6 +860,58 @@ bot.on('widget_query', async (query) => {
         text: 'Action error',
       });
     } catch {}
+  }
+});
+
+// Live Walk-In Queue Status check for customers
+bot.onText(/\/queue/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const today = toDateKey(new Date());
+    const entry = await WaitlistEntry.findOne({
+      telegramId: msg.from.id,
+      date: today,
+      status: { $in: ['waiting', 'called', 'in_chair'] },
+    }).sort({ createdAt: -1 });
+
+    if (!entry) {
+      return bot.sendMessage(chatId, '🪑 Hozircha siz jonli navbatda emassiz.', { parse_mode: 'HTML' });
+    }
+
+    const shop = await ServicesModel.findById(entry.shopId).select('name');
+    const shopLabel = escapeHtml(shop?.name?.uz || shop?.name?.en || 'Salon');
+
+    if (entry.status === 'called') {
+      return bot.sendMessage(
+        chatId,
+        `🔔 <b>Navbatingiz keldi! (#${entry.queueNumber})</b>\n🏪 ${shopLabel}\nIltimos, ustangiz oldiga kiring!`,
+        { parse_mode: 'HTML' }
+      );
+    }
+    if (entry.status === 'in_chair') {
+      return bot.sendMessage(
+        chatId,
+        `✂️ <b>Siz hozir xizmatdasiz (#${entry.queueNumber})</b>\n🏪 ${shopLabel}`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const ahead = await WaitlistEntry.countDocuments({
+      shopId: entry.shopId,
+      date: today,
+      status: 'waiting',
+      queueNumber: { $lt: entry.queueNumber },
+    });
+
+    const text =
+      `🎟 <b>Sizning navbatingiz: #${entry.queueNumber}</b>\n\n` +
+      `🏪 <b>${shopLabel}</b>\n` +
+      `👥 Oldingizda: <b>${ahead} kishi</b>\n` +
+      `⏳ Taxminiy kutish vaqti: <b>~${Math.max(10, ahead * 20)} daqiqa</b>`;
+
+    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('customerBot /queue error:', err);
   }
 });
 

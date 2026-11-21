@@ -6,11 +6,12 @@ import Booking from '../models/bookingHistory.js';
 import SearchCategory from '../models/searchCategory.js';
 import Promotion from '../models/promotion.js';
 import { notifyShopOwnerOfNewBooking } from '../config/shopControlBot.js';
-import { requireTelegramAuth } from '../middleware/telegramAuth.js';
+import { requireTelegramAuth, verifyTelegramInitData, verifyMobileCustomerToken } from '../middleware/telegramAuth.js';
 import { isWithinWorkingHours, BookingValidationError } from '../utils/bookingTime.js';
 import { normalizeLanguage } from '../utils/botMessages.js';
 import { toDateKey } from '../utils/dateKey.js';
 import { createBooking, BookingConflictError, BookingNotFoundError } from '../services/createBooking.js';
+import { addToWaitlist, getEntryPosition } from '../services/waitlistService.js';
 import { emitToShop } from '../config/socket.js';
 import { getCached, setCached } from '../utils/simpleCache.js';
 
@@ -622,5 +623,49 @@ router.get('/allShops', async (req, res) => {
   }
 });
 
+const waitlistJoinLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many waitlist requests from this IP. Please try again later.' },
+});
+
+// Walk-in Queue Self Check-In (QR / Online)
+router.post('/:shopId/waitlist/join', waitlistJoinLimiter, async (req, res) => {
+  try {
+    // Only trust telegramId if cryptographically verified via initData or mobile JWT
+    let verifiedTelegramId = null;
+    const initData = req.headers['x-telegram-init-data'];
+    const authHeader = req.headers.authorization || '';
+    const mobileToken = req.headers['x-mobile-token'] || (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null);
+
+    if (initData && process.env.TELEGRAM_BOT_TOKEN) {
+      const tgUser = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN);
+      if (tgUser?.id) verifiedTelegramId = tgUser.id;
+    } else if (mobileToken) {
+      const mobileUser = verifyMobileCustomerToken(mobileToken);
+      if (mobileUser?.id) verifiedTelegramId = mobileUser.id;
+    }
+
+    const result = await addToWaitlist(req.params.shopId, req.body, {
+      verifiedTelegramId,
+      allowUnverifiedTelegramId: false,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to join waitlist' });
+  }
+});
+
+// Walk-in Live Queue Position Status (PII stripped for public view)
+router.get('/:shopId/waitlist/:entryId', async (req, res) => {
+  try {
+    const status = await getEntryPosition(req.params.shopId, req.params.entryId, { publicView: true });
+    res.status(200).json(status);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to fetch waitlist status' });
+  }
+});
 
 export default router;

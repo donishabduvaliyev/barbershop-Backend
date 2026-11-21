@@ -10,9 +10,15 @@ dotenv.config();
 import ServicesModel from '../models/shopData.js';
 import Booking from '../models/bookingHistory.js';
 import OwnerPreference from '../models/ownerPreference.js';
+import StaffShift from '../models/staffShift.js';
+import CashRegister from '../models/cashRegister.js';
 import { registerCardEditor } from './notificationBridge.js';
 import { confirmBooking, rejectBooking } from '../services/bookingActions.js';
-import { DIVIDER, formatBookingCard, formatShopOwnerBookingCardHTML } from '../utils/telegramFormat.js';
+import { calculateStaffPayroll } from '../services/staffPayrollService.js';
+import { getCurrentRegisterStatus } from '../services/cashRegisterService.js';
+import { getShopQueue } from '../services/waitlistService.js';
+import { toDateKey, dateKeyToRange } from '../utils/dateKey.js';
+import { DIVIDER, formatBookingCard, formatShopOwnerBookingCardHTML, escapeHtml } from '../utils/telegramFormat.js';
 import { notifyUser as notifyCustomerBotUser } from './telegramBot.js';
 import { t, normalizeLanguage } from '../utils/botMessages.js';
 import { escapeMarkdown } from '../utils/escapeMarkdown.js';
@@ -432,6 +438,140 @@ shopControlBot.on('message', async (msg) => {
     await shopControlBot.sendMessage(msg.chat.id, t(booking.ownerLanguage, 'owner.reasonSentToClient'));
   } catch (err) {
     console.error('Error handling shop-control rejection reason message:', err);
+  }
+});
+
+// ==========================================
+// SmartChair OS Owner Commands (/shifts, /payroll, /zreport, /queue)
+// ==========================================
+
+shopControlBot.onText(/\/shifts/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('name staff');
+    if (shops.length === 0) return;
+
+    const today = toDateKey(new Date());
+    for (const shop of shops) {
+      const shifts = await StaffShift.find({ shopId: shop._id, date: today });
+      const staffMap = new Map((shop.staff || []).map((s) => [String(s._id), s.name]));
+      const shopName = escapeHtml(shop.name?.uz || shop.name?.en || 'Salon');
+
+      let text = `📅 <b>Bugungi Smenalar — ${shopName} (${today})</b>\n\n`;
+      if (shifts.length === 0) {
+        text += '<i>Bugun uchun rejalashtirilgan smenalar yo‘q.</i>';
+      } else {
+        for (const sh of shifts) {
+          const name = escapeHtml(staffMap.get(String(sh.staffId)) || 'Usta');
+          const icon = sh.status === 'active' ? '🟢' : sh.status === 'completed' ? '✅' : sh.status === 'absent' ? '🔴' : '🟡';
+          text += `${icon} <b>${name}</b> — ${sh.status.toUpperCase()}\n`;
+        }
+      }
+      await shopControlBot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+    }
+  } catch (err) {
+    console.error('shopControlBot /shifts error:', err);
+  }
+});
+
+shopControlBot.onText(/\/payroll/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('_id');
+    if (shops.length === 0) return;
+
+    const todayKey = toDateKey(new Date());
+    const { start, end } = dateKeyToRange(todayKey);
+
+    for (const shop of shops) {
+      const report = await calculateStaffPayroll(shop._id, start, end);
+      let text = `💵 <b>Bugungi Daromad va Ulushlar — ${escapeHtml(report.shopName)}</b>\n`;
+      text += `📅 Sana: <b>${todayKey}</b>\n\n`;
+      text += `💰 Umumiy tushum: <b>${report.totalGrossRevenue.toLocaleString()} UZS</b>\n`;
+      text += `👨‍🔧 Ustalar ulushi: <b>${report.totalStaffPayout.toLocaleString()} UZS</b>\n`;
+      text += `🏢 Salon foydasi: <b>${report.totalShopRetained.toLocaleString()} UZS</b>\n\n`;
+
+      if (report.staffBreakdown.length > 0) {
+        text += `<b>Ustalar kesimida:</b>\n`;
+        for (const s of report.staffBreakdown) {
+          if (s.grossRevenue === 0) continue;
+          text += `• <b>${escapeHtml(s.name)}</b>: ${s.grossRevenue.toLocaleString()} UZS (Ulush: ${s.staffPayout.toLocaleString()} UZS / ${s.commissionRate}%)\n`;
+        }
+      }
+      await shopControlBot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+    }
+  } catch (err) {
+    console.error('shopControlBot /payroll error:', err);
+  }
+});
+
+shopControlBot.onText(/\/zreport/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('name');
+    if (shops.length === 0) return;
+
+    for (const shop of shops) {
+      const shopName = escapeHtml(shop.name?.uz || shop.name?.en || 'Salon');
+      const current = await getCurrentRegisterStatus(shop._id);
+
+      if (current) {
+        const { register, summary } = current;
+        const text =
+          `🧾 <b>Joriy Kassa Hisoboti (Ochiq Smena) — ${shopName}</b>\n\n` +
+          `💵 Boshlang‘ich naqd: <b>${register.openingCashBalance.toLocaleString()} UZS</b>\n` +
+          `📈 Jami kirim: <b>${summary.totalIncome.toLocaleString()} UZS</b>\n` +
+          `📉 Chiqimlar: <b>${summary.totalExpense.toLocaleString()} UZS</b>\n` +
+          `🏦 Kassadagi kutilayotgan naqd: <b>${summary.expectedCashBalance.toLocaleString()} UZS</b>\n\n` +
+          `<b>To‘lov turlari:</b>\n` +
+          `• Naqd: ${summary.breakdownByMethod.cash.toLocaleString()} UZS\n` +
+          `• Click: ${summary.breakdownByMethod.click.toLocaleString()} UZS\n` +
+          `• Payme: ${summary.breakdownByMethod.payme.toLocaleString()} UZS\n` +
+          `• Terminal: ${summary.breakdownByMethod.terminal_uzcard_humo.toLocaleString()} UZS`;
+        await shopControlBot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+      } else {
+        const latestClosed = await CashRegister.findOne({ shopId: shop._id, status: 'closed' }).sort({ closedAt: -1 });
+        if (!latestClosed) {
+          await shopControlBot.sendMessage(chatId, `🧾 <b>${shopName}</b>: Hozircha kassa smenasi ochilmagan.`, { parse_mode: 'HTML' });
+        } else {
+          const text =
+            `🧾 <b>Oxirgi Z-Hisobot (Yopilgan) — ${shopName}</b>\n\n` +
+            `📈 Jami kirim: <b>${latestClosed.totalIncome.toLocaleString()} UZS</b>\n` +
+            `📉 Chiqimlar: <b>${latestClosed.totalExpense.toLocaleString()} UZS</b>\n` +
+            `🏦 Kutilgan naqd: <b>${latestClosed.expectedCashBalance.toLocaleString()} UZS</b>\n` +
+            `💵 Haqiqiy naqd: <b>${(latestClosed.closingCashBalance || 0).toLocaleString()} UZS</b>\n` +
+            `⚖️ Farq: <b>${latestClosed.cashDiscrepancy.toLocaleString()} UZS</b>`;
+          await shopControlBot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('shopControlBot /zreport error:', err);
+  }
+});
+
+shopControlBot.onText(/\/queue/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    const shops = await ServicesModel.find({ ownerTelegramId: msg.from.id }).select('name');
+    if (shops.length === 0) return;
+
+    for (const shop of shops) {
+      const queue = await getShopQueue(shop._id);
+      const shopName = escapeHtml(shop.name?.uz || shop.name?.en || 'Salon');
+      let text = `🪑 <b>Jonli Navbat (Walk-In) — ${shopName}</b>\n\n`;
+      if (queue.length === 0) {
+        text += '<i>Hozirda navbatda kutayotgan mijozlar yo‘q.</i>';
+      } else {
+        for (const entry of queue) {
+          const icon = entry.status === 'called' ? '🔔' : entry.status === 'in_chair' ? '✂️' : '⏳';
+          text += `${icon} <b>#${entry.queueNumber} ${escapeHtml(entry.customerName)}</b> (${escapeHtml(entry.serviceName || 'Xizmat')}) — <i>${entry.status}</i>\n`;
+        }
+      }
+      await shopControlBot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+    }
+  } catch (err) {
+    console.error('shopControlBot /queue error:', err);
   }
 });
 
