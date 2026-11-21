@@ -1,12 +1,168 @@
 import WaitlistEntry from '../models/waitlistEntry.js';
 import ServicesModel from '../models/shopData.js';
+import Booking from '../models/bookingHistory.js';
 import { toDateKey } from '../utils/dateKey.js';
 import { emitToShop, emitToUser } from '../config/socket.js';
 import { notifyUser } from '../config/telegramBot.js';
 import { escapeHtml } from '../utils/telegramFormat.js';
 import { isValidObjectId, sanitizeString } from '../utils/validate.js';
+import { generateSyntheticTelegramId } from '../utils/syntheticCustomerId.js';
 
 const FINALIZED_STATUSES = ['completed', 'cancelled', 'no_show'];
+
+/**
+ * Computes unified wait estimate factoring in BOTH live walk-in queue
+ * AND upcoming scheduled bookings in the next 2 hours.
+ */
+export async function calculateUnifiedWaitEstimate(shop, staffId = null) {
+  const today = toDateKey(new Date());
+  const now = new Date();
+  const currentHourStart = new Date(now);
+  currentHourStart.setMinutes(0, 0, 0);
+  const twoHoursLater = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+
+  const waitlistFilter = {
+    shopId: shop._id,
+    date: today,
+    status: { $in: ['waiting', 'called'] },
+  };
+  const bookingFilter = {
+    shopId: shop._id,
+    status: { $in: ['pending', 'confirmed'] },
+    requestedTime: { $gte: currentHourStart, $lte: twoHoursLater },
+  };
+
+  if (staffId) {
+    waitlistFilter.staffId = staffId;
+    bookingFilter.staffId = staffId;
+  }
+
+  const [waitingCount, upcomingBookingsCount] = await Promise.all([
+    WaitlistEntry.countDocuments(waitlistFilter),
+    Booking.countDocuments(bookingFilter),
+  ]);
+
+  const capacity = staffId ? 1 : Math.max(1, shop.staff?.length || shop.capacity || 1);
+  const totalLoad = waitingCount + upcomingBookingsCount;
+  const estimatedWaitMinutes = Math.max(10, Math.round((totalLoad / capacity) * 25));
+
+  return {
+    waitingCount,
+    upcomingBookingsCount,
+    estimatedWaitMinutes,
+    capacity,
+  };
+}
+
+/**
+ * Public summary for Reception QR Self Check-In page (/waitlist/:shopId).
+ */
+export async function getPublicWaitlistSummary(shopId) {
+  if (!isValidObjectId(shopId)) {
+    const err = new Error('Invalid shopId');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const shop = await ServicesModel.findOne({ _id: shopId, isArchived: { $ne: true } })
+    .select('name address phone image staff services capacity isOperational');
+  if (!shop) {
+    const err = new Error('Shop not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const estimate = await calculateUnifiedWaitEstimate(shop);
+
+  return {
+    shop: {
+      _id: shop._id,
+      name: shop.name,
+      address: shop.address,
+      phone: shop.phone,
+      image: shop.image,
+      isOperational: shop.isOperational,
+      staff: (shop.staff || []).map((s) => ({
+        _id: s._id,
+        name: s.name,
+        title: s.title,
+        photo: s.photo,
+        isAvailableNow: s.isAvailableNow !== false,
+      })),
+      services: (shop.services || []).filter((sv) => sv.isActive !== false),
+    },
+    ...estimate,
+  };
+}
+
+/**
+ * Synchronizes a walk-in queue entry into BookingData (source: 'walk-in')
+ * so occupied chairs block online slots and completed walk-ins feed
+ * Dashboard Stats, Staff Payroll & Commissions, and Customer CRM.
+ */
+async function syncWalkInToBooking(entry, shop, targetStatus) {
+  if (entry.bookingId) {
+    const existing = await Booking.findByIdAndUpdate(
+      entry.bookingId,
+      { $set: { status: targetStatus } },
+      { new: true }
+    );
+    if (existing) {
+      emitToShop(shop._id, 'appointment:update', existing);
+      return existing;
+    }
+  }
+
+  if (targetStatus !== 'confirmed' && targetStatus !== 'completed') {
+    return null;
+  }
+
+  const requestedTime = new Date();
+  requestedTime.setMinutes(0, 0, 0);
+
+  const shopDisplayName = shop?.name?.en || shop?.name?.uz || shop?.name?.ru || 'Salon';
+  const userTelegramId = entry.telegramId && entry.telegramId > 0
+    ? entry.telegramId
+    : generateSyntheticTelegramId();
+
+  const bookingDoc = {
+    shopId: shop._id,
+    shopName: shopDisplayName,
+    userTelegramId,
+    userName: entry.customerName,
+    userNumber: entry.customerPhone,
+    requestedTime,
+    status: targetStatus,
+    staffId: entry.staffId || null,
+    staffName: entry.staffName || '',
+    serviceId: entry.serviceId || null,
+    serviceName: entry.serviceName || '',
+    price: typeof entry.price === 'number' ? entry.price : null,
+    source: 'walk-in',
+    notes: entry.notes || '',
+  };
+
+  let created = null;
+  try {
+    created = await Booking.create(bookingDoc);
+  } catch (err) {
+    // If a confirmed booking already occupies that exact staff+hour index,
+    // fall back to virtualSlot so the walk-in record is still logged cleanly.
+    if (err.code === 11000) {
+      bookingDoc.staffId = null;
+      bookingDoc.virtualSlot = Math.floor(Math.random() * 1000) + 10;
+      created = await Booking.create(bookingDoc);
+    } else {
+      throw err;
+    }
+  }
+
+  entry.bookingId = created._id;
+  await entry.save();
+
+  emitToShop(shop._id, 'appointment:update', created);
+  return created;
+}
 
 export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, allowUnverifiedTelegramId = false } = {}) {
   if (!isValidObjectId(shopId)) {
@@ -30,7 +186,13 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
     throw err;
   }
 
-  const shop = await ServicesModel.findById(shopId).select('name staff');
+  if (data?.serviceId && !isValidObjectId(data.serviceId)) {
+    const err = new Error('Invalid serviceId');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const shop = await ServicesModel.findById(shopId).select('name staff services capacity');
   if (!shop) {
     const err = new Error('Shop not found');
     err.statusCode = 404;
@@ -45,6 +207,29 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
     staffName = staffMember ? staffMember.name : sanitizeString(data.staffName, 120);
   }
 
+  let resolvedServiceId = data.serviceId || null;
+  let resolvedServiceName = sanitizeString(data.serviceName, 150);
+  let resolvedPrice = typeof data.price === 'number' && Number.isFinite(data.price) && data.price >= 0 ? data.price : null;
+
+  if (resolvedServiceId) {
+    const matchedSv = (shop.services || []).find((sv) => String(sv._id) === String(resolvedServiceId));
+    if (matchedSv) {
+      resolvedServiceName = resolvedServiceName || matchedSv.name?.uz || matchedSv.name?.en || matchedSv.name?.ru || '';
+      if (resolvedPrice === null) resolvedPrice = matchedSv.price;
+    }
+  } else if (resolvedServiceName) {
+    const matchedSv = (shop.services || []).find(
+      (sv) =>
+        sv.name?.uz === resolvedServiceName ||
+        sv.name?.en === resolvedServiceName ||
+        sv.name?.ru === resolvedServiceName
+    );
+    if (matchedSv) {
+      resolvedServiceId = matchedSv._id;
+      if (resolvedPrice === null) resolvedPrice = matchedSv.price;
+    }
+  }
+
   // Determine trusted Telegram ID (never trust raw req.body.telegramId on public routes)
   let safeTelegramId = null;
   if (verifiedTelegramId && Number.isSafeInteger(Number(verifiedTelegramId)) && Number(verifiedTelegramId) > 0) {
@@ -53,13 +238,11 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
     safeTelegramId = Number(data.telegramId);
   }
 
-  // Count currently waiting ahead
-  const waitingAheadFilter = { shopId, date: today, status: 'waiting' };
-  if (data.staffId) {
-    waitingAheadFilter.staffId = data.staffId;
-  }
-  const waitingAhead = await WaitlistEntry.countDocuments(waitingAheadFilter);
-  const estimatedWaitMinutes = Math.max(10, waitingAhead * 20);
+  // Unified wait estimation (live queue + scheduled bookings in next 2 hours)
+  const { waitingCount, upcomingBookingsCount, estimatedWaitMinutes } = await calculateUnifiedWaitEstimate(
+    shop,
+    data.staffId || null
+  );
 
   // Assign daily sequential queueNumber with race-condition retry
   let entry = null;
@@ -79,7 +262,9 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
         telegramId: safeTelegramId,
         staffId: data.staffId || null,
         staffName,
-        serviceName: sanitizeString(data.serviceName, 150),
+        serviceId: resolvedServiceId,
+        serviceName: resolvedServiceName,
+        price: resolvedPrice,
         estimatedWaitMinutes,
         status: 'waiting',
         notes: sanitizeString(data.notes, 300),
@@ -101,11 +286,11 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
       `🎟 <b>Navbat raqamingiz: #${entry.queueNumber}</b>\n\n` +
       `🏪 <b>${shopLabel}</b>\n` +
       `⏳ Taxminiy kutish vaqti: <b>~${entry.estimatedWaitMinutes} daqiqa</b>\n` +
-      `👥 Oldingizda: <b>${waitingAhead} kishi</b>`;
+      `👥 Oldingizda: <b>${waitingCount} kishi</b>`;
     notifyUser(entry.telegramId, msg, { parse_mode: 'HTML' }).catch(() => {});
   }
 
-  return { entry, positionAhead: waitingAhead };
+  return { entry, positionAhead: waitingCount, upcomingBookingsCount };
 }
 
 export async function getShopQueue(shopId, date = toDateKey(new Date())) {
@@ -149,7 +334,6 @@ export async function getEntryPosition(shopId, entryId, { publicView = false } =
   }
 
   if (publicView) {
-    // Strip PII (customerPhone, telegramId, notes) from unauthenticated responses
     return {
       entry: {
         _id: entry._id,
@@ -196,13 +380,25 @@ export async function updateWaitlistStatus(shopId, entryId, nextStatus) {
 
   await entry.save();
 
+  const shop = await ServicesModel.findById(shopId).select('name');
+
+  // Synchronize with BookingData so appointments, availability, stats, payroll & CRM stay 100% unified
+  if (shop) {
+    if (nextStatus === 'in_chair') {
+      await syncWalkInToBooking(entry, shop, 'confirmed');
+    } else if (nextStatus === 'completed') {
+      await syncWalkInToBooking(entry, shop, 'completed');
+    } else if (nextStatus === 'cancelled' || nextStatus === 'no_show') {
+      await syncWalkInToBooking(entry, shop, 'cancelled');
+    }
+  }
+
   emitToShop(shopId, 'waitlist:update', { action: nextStatus, entry });
   if (entry.telegramId && entry.telegramId > 0) {
     emitToUser(entry.telegramId, 'waitlist:status', { status: nextStatus, entry });
   }
 
   if (nextStatus === 'called' && entry.telegramId && entry.telegramId > 0) {
-    const shop = await ServicesModel.findById(shopId).select('name');
     const shopLabel = escapeHtml(shop?.name?.uz || shop?.name?.en || 'Salon');
     const msg =
       `🪑 <b>Navbatingiz keldi! (#${entry.queueNumber})</b>\n\n` +

@@ -11,7 +11,7 @@ import { isWithinWorkingHours, BookingValidationError } from '../utils/bookingTi
 import { normalizeLanguage } from '../utils/botMessages.js';
 import { toDateKey } from '../utils/dateKey.js';
 import { createBooking, BookingConflictError, BookingNotFoundError } from '../services/createBooking.js';
-import { addToWaitlist, getEntryPosition } from '../services/waitlistService.js';
+import { addToWaitlist, getEntryPosition, getPublicWaitlistSummary } from '../services/waitlistService.js';
 import { emitToShop } from '../config/socket.js';
 import { getCached, setCached } from '../utils/simpleCache.js';
 
@@ -655,6 +655,16 @@ router.post('/:shopId/waitlist/join', waitlistJoinLimiter, async (req, res) => {
     res.status(201).json(result);
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message || 'Failed to join waitlist' });
+  }
+});
+
+// Public Walk-in Queue Summary (for QR Check-In Page)
+router.get('/:shopId/waitlist/summary', async (req, res) => {
+  try {
+    const summary = await getPublicWaitlistSummary(req.params.shopId);
+    res.status(200).json(summary);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to fetch waitlist summary' });
   }
 });
 

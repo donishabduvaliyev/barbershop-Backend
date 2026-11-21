@@ -4,6 +4,8 @@ import http from 'http';
 import mongoose from 'mongoose';
 import { setupTestDb, teardownTestDb, clearTestDb } from './setupDb.js';
 import ServicesModel from '../models/shopData.js';
+import Booking from '../models/bookingHistory.js';
+import { calculateStaffPayroll } from '../services/staffPayrollService.js';
 import adminWaitlistRouter from '../routes/adminWaitlist.js';
 import shopRoutes from '../routes/shops.js';
 import { signAdminToken } from '../middleware/adminAuth.js';
@@ -131,5 +133,100 @@ describe('Live Walk-In Waitlist & Digital Queue Module', () => {
     const listData = await listRes.json();
     expect(listData.queue).toHaveLength(1);
     expect(listData.queue[0].customerName).toBe('Javohir');
+  });
+
+  it('unifies walk-in queue with scheduled bookings, wait estimates, and staff payroll', async () => {
+    const barberId = new mongoose.Types.ObjectId();
+    const serviceId = new mongoose.Types.ObjectId();
+    const shop = await ServicesModel.create({
+      id: 302,
+      name: { en: 'Unified Salon', uz: 'Unified Salon', ru: 'Единый Салон' },
+      category: 'Barbershop',
+      description: { en: 'Test', uz: 'Test', ru: 'Тест' },
+      image: 'https://example.com/img.jpg',
+      phone: '+998901112233',
+      address: 'Navoi 10',
+      location: { type: 'Point', coordinates: [69.24, 41.31] },
+      services: [{ _id: serviceId, name: { en: 'Fade', uz: 'Fade', ru: 'Фейд' }, price: 100000, durationMinutes: 45 }],
+      workingHours: [{ days: ['Monday', 'Sunday'], from: '09:00', to: '22:00' }],
+      staff: [{ _id: barberId, name: 'Aziz', commission: 50 }],
+    });
+
+    const token = signAdminToken({ telegramId: 77777, shopId: shop._id });
+
+    // Create 2 scheduled bookings in the next 2 hours
+    const nextHour = new Date(Date.now() + 30 * 60 * 1000);
+    const secondHour = new Date(Date.now() + 90 * 60 * 1000);
+    await Booking.create([
+      {
+        shopId: shop._id,
+        shopName: 'Unified Salon',
+        userTelegramId: 5001,
+        userNumber: '+998901110001',
+        requestedTime: nextHour,
+        status: 'confirmed',
+        staffId: barberId,
+      },
+      {
+        shopId: shop._id,
+        shopName: 'Unified Salon',
+        userTelegramId: 5002,
+        userNumber: '+998901110002',
+        requestedTime: secondHour,
+        status: 'pending',
+        staffId: barberId,
+      },
+    ]);
+
+    // 1. Public summary should reflect the 2 scheduled bookings in wait estimate
+    const sumRes = await fetch(`${baseUrl}/api/shops/${shop._id}/waitlist/summary`);
+    expect(sumRes.status).toBe(200);
+    const sumData = await sumRes.json();
+    expect(sumData.upcomingBookingsCount).toBe(2);
+    expect(sumData.estimatedWaitMinutes).toBeGreaterThanOrEqual(50);
+
+    // 2. Join waitlist with serviceId -> price & serviceName auto-resolved
+    const joinRes = await fetch(`${baseUrl}/api/shops/${shop._id}/waitlist/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerName: 'WalkIn Client',
+        customerPhone: '+998905556677',
+        staffId: barberId.toString(),
+        serviceId: serviceId.toString(),
+      }),
+    });
+    expect(joinRes.status).toBe(201);
+    const joinData = await joinRes.json();
+    expect(joinData.entry.price).toBe(100000);
+
+    // 3. Seat & complete walk-in -> creates Booking (source: 'walk-in', status: 'completed')
+    await fetch(`${baseUrl}/api/admin/waitlist/${joinData.entry._id}/seat`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const compRes = await fetch(`${baseUrl}/api/admin/waitlist/${joinData.entry._id}/complete`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(compRes.status).toBe(200);
+    const compData = await compRes.json();
+    expect(compData.entry.bookingId).toBeTruthy();
+
+    // Verify synced Booking exists in BookingData
+    const syncedBooking = await Booking.findById(compData.entry.bookingId);
+    expect(syncedBooking).toBeTruthy();
+    expect(syncedBooking.source).toBe('walk-in');
+    expect(syncedBooking.status).toBe('completed');
+    expect(syncedBooking.price).toBe(100000);
+
+    // 4. Verify Staff Payroll includes the completed walk-in revenue & commission!
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date();
+    dayEnd.setHours(23, 59, 59, 999);
+    const payroll = await calculateStaffPayroll(shop._id, dayStart, dayEnd);
+    expect(payroll.totalGrossRevenue).toBe(100000);
+    expect(payroll.totalStaffPayout).toBe(50000);
   });
 });

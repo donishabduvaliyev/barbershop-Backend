@@ -10,7 +10,10 @@ const WaitlistEntrySchema = new Schema({
   telegramId: { type: Number, default: null },
   staffId: { type: Schema.Types.ObjectId, default: null }, // null = any available master
   staffName: { type: String, default: '' },
+  serviceId: { type: Schema.Types.ObjectId, default: null },
   serviceName: { type: String, default: '' },
+  price: { type: Number, default: null },
+  bookingId: { type: Schema.Types.ObjectId, ref: 'Booking', default: null },
   estimatedWaitMinutes: { type: Number, default: 15 },
   status: {
     type: String,
