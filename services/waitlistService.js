@@ -201,6 +201,26 @@ export async function addToWaitlist(shopId, data, { verifiedTelegramId = null, a
 
   const today = toDateKey(new Date());
 
+  // Idempotent check: if this phone already has an active queue ticket today,
+  // return the existing ticket instead of creating duplicate queue numbers.
+  const existingActive = await WaitlistEntry.findOne({
+    shopId,
+    date: today,
+    customerPhone,
+    status: { $in: ['waiting', 'called', 'in_chair'] },
+  });
+  if (existingActive) {
+    const aheadCount = existingActive.status === 'waiting'
+      ? await WaitlistEntry.countDocuments({
+          shopId,
+          date: today,
+          status: 'waiting',
+          queueNumber: { $lt: existingActive.queueNumber },
+        })
+      : 0;
+    return { entry: existingActive, positionAhead: aheadCount, alreadyInQueue: true };
+  }
+
   let staffName = '';
   if (data.staffId) {
     const staffMember = (shop.staff || []).find((s) => String(s._id) === String(data.staffId));

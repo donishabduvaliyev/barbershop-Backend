@@ -1,5 +1,7 @@
 import CashRegister from '../models/cashRegister.js';
 import Transaction from '../models/transaction.js';
+import Booking from '../models/bookingHistory.js';
+import { emitToShop } from '../config/socket.js';
 import { isValidObjectId, parseNonNegativeNumber, sanitizeString } from '../utils/validate.js';
 
 const INCOME_TYPES = ['service_payment', 'product_sale', 'tip'];
@@ -114,8 +116,8 @@ export async function recordTransaction(shopId, data) {
   }
 
   const amount = parseNonNegativeNumber(data.amount);
-  if (amount === null) {
-    const err = new Error('Transaction amount must be a valid non-negative number');
+  if (amount === null || amount <= 0) {
+    const err = new Error('Transaction amount must be a positive number greater than 0');
     err.statusCode = 400;
     throw err;
   }
@@ -139,6 +141,39 @@ export async function recordTransaction(shopId, data) {
     throw err;
   }
 
+  let linkedBooking = null;
+  if (data.bookingId) {
+    linkedBooking = await Booking.findOne({ _id: data.bookingId, shopId });
+    if (!linkedBooking) {
+      const err = new Error('Booking not found for this shop');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (['cancelled', 'rejected', 'no-show'].includes(linkedBooking.status)) {
+      const err = new Error(`Cannot record payment for a ${linkedBooking.status} booking`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (data.type === 'service_payment') {
+      if (linkedBooking.isPaid) {
+        const err = new Error('This appointment is already fully paid');
+        err.statusCode = 409;
+        throw err;
+      }
+
+      if (typeof linkedBooking.price === 'number' && linkedBooking.price > 0) {
+        const remainingDue = Math.max(0, linkedBooking.price - (linkedBooking.paidAmount || 0));
+        if (amount > remainingDue) {
+          const err = new Error(`Payment (${amount}) exceeds remaining balance due (${remainingDue} UZS)`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+    }
+  }
+
   const tx = await Transaction.create({
     shopId,
     registerId: register._id,
@@ -153,6 +188,26 @@ export async function recordTransaction(shopId, data) {
     customerPhone: sanitizeString(data.customerPhone, 30),
     recordedBy: data.recordedBy || null,
   });
+
+  if (linkedBooking && data.type === 'service_payment') {
+    const newPaidAmount = (linkedBooking.paidAmount || 0) + amount;
+    const isNowFullyPaid = typeof linkedBooking.price === 'number' && linkedBooking.price > 0
+      ? newPaidAmount >= linkedBooking.price
+      : true;
+
+    linkedBooking.paidAmount = newPaidAmount;
+    linkedBooking.isPaid = isNowFullyPaid;
+    if (isNowFullyPaid) {
+      linkedBooking.paidAt = new Date();
+    }
+    if (!linkedBooking.paymentMethod) {
+      linkedBooking.paymentMethod = paymentMethod;
+    } else if (linkedBooking.paymentMethod !== paymentMethod) {
+      linkedBooking.paymentMethod = 'split';
+    }
+    await linkedBooking.save();
+    emitToShop(shopId, 'appointment:update', linkedBooking);
+  }
 
   return tx;
 }

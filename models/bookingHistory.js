@@ -44,6 +44,10 @@ const BookingSchema = new Schema({
   serviceId: { type: Schema.Types.ObjectId, default: null },
   serviceName: { type: String, default: '' },
   price: { type: Number, default: null },
+  paidAmount: { type: Number, default: 0, min: 0 },
+  isPaid: { type: Boolean, default: false },
+  paidAt: { type: Date, default: null },
+  paymentMethod: { type: String, default: '' },
   // Identifies the shop-control bot message this booking was first posted
   // as, so any actor (the bot's own buttons, or the admin panel) can edit
   // that same message in place when the status changes.
