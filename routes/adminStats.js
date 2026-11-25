@@ -74,7 +74,7 @@ router.get('/overview', async (req, res) => {
         { $match: revenueMatch },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$requestedTime' } },
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$requestedTime', timezone: 'Asia/Tashkent' } },
             revenue: { $sum: { $ifNull: ['$price', 0] } },
             appointments: { $sum: 1 },
           },

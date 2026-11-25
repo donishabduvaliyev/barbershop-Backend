@@ -118,3 +118,10 @@ export function startWinBackJob() {
   runWinBackSweep();
   intervalHandle = setInterval(runWinBackSweep, CHECK_INTERVAL_MS);
 }
+
+export function stopWinBackJob() {
+  if (intervalHandle) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
+  }
+}

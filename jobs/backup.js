@@ -14,6 +14,10 @@ import Customer from '../models/customer.js';
 import Review from '../models/review.js';
 import Promotion from '../models/promotion.js';
 import SearchCategory from '../models/searchCategory.js';
+import CashRegister from '../models/cashRegister.js';
+import Transaction from '../models/transaction.js';
+import StaffShift from '../models/staffShift.js';
+import WaitlistEntry from '../models/waitlistEntry.js';
 import { uploadBackup, backupsConfigured } from '../config/backupStorage.js';
 import { captureError } from '../config/errorTracking.js';
 import { toDateKey } from '../utils/dateKey.js';
@@ -24,7 +28,7 @@ const LOCK_ID = 'dailyBackup';
 // Every collection worth losing sleep over — deliberately excludes
 // PageView (analytics, regenerable/disposable) and JobLock (pure runtime
 // bookkeeping, meaningless outside the running process).
-const COLLECTIONS = [
+export const COLLECTIONS = [
   { name: 'shops', model: ServicesModel },
   { name: 'bookings', model: Booking },
   { name: 'users', model: User },
@@ -32,6 +36,10 @@ const COLLECTIONS = [
   { name: 'reviews', model: Review },
   { name: 'promotions', model: Promotion },
   { name: 'searchCategories', model: SearchCategory },
+  { name: 'cashRegisters', model: CashRegister },
+  { name: 'transactions', model: Transaction },
+  { name: 'staffShifts', model: StaffShift },
+  { name: 'waitlistEntries', model: WaitlistEntry },
 ];
 
 // Same Mongo-based mutual exclusion as jobs/reminders.js — see that file's
@@ -103,4 +111,11 @@ export function startBackupJob() {
   if (intervalHandle) return;
   runBackup(); // take one immediately on boot rather than waiting a full day
   intervalHandle = setInterval(runBackup, CHECK_INTERVAL_MS);
+}
+
+export function stopBackupJob() {
+  if (intervalHandle) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
+  }
 }

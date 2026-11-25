@@ -29,16 +29,35 @@ const ACTIVE_STATUSES = ['pending', 'confirmed'];
 // and streamed to R2, so there's never a reason to touch the filesystem.
 // 8MB comfortably covers an unedited phone photo; fileFilter rejects
 // anything that isn't actually an image before it's ever processed.
+const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]);
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image files are allowed.'));
+    if (!ALLOWED_IMAGE_MIME_TYPES.has(file.mimetype)) {
+      return cb(new Error('Only JPEG, PNG, WebP, HEIC, or HEIF image files are allowed.'));
     }
     cb(null, true);
   },
 });
+
+const uploadSinglePhoto = upload.single('photo');
+
+function handlePhotoUpload(req, res, next) {
+  uploadSinglePhoto(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ message: err.message });
+    }
+    next();
+  });
+}
 
 // How many upcoming active bookings reference this staff/service — used to
 // warn before a delete rather than silently orphaning appointments that
@@ -110,7 +129,7 @@ router.patch('/working-hours', async (req, res) => {
 // Only the resulting R2 URL is ever stored on the document — the image
 // bytes themselves never touch MongoDB.
 
-router.post('/photo', upload.single('photo'), async (req, res) => {
+router.post('/photo', handlePhotoUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No photo uploaded.' });
 
@@ -130,7 +149,7 @@ router.post('/photo', upload.single('photo'), async (req, res) => {
   }
 });
 
-router.post('/photos', upload.single('photo'), async (req, res) => {
+router.post('/photos', handlePhotoUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No photo uploaded.' });
 
@@ -167,7 +186,7 @@ router.delete('/photos', async (req, res) => {
   }
 });
 
-router.post('/staff/:staffId/photo', upload.single('photo'), async (req, res) => {
+router.post('/staff/:staffId/photo', handlePhotoUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No photo uploaded.' });
 

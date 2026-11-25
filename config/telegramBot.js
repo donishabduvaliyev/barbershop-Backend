@@ -408,7 +408,7 @@ export async function sendInteractiveBookingWidget(chatId, shopOrId, options = {
     if (!shop) return false;
 
     const lang = await getUserLanguage(chatId);
-    const dateStr = options.dateStr || new Date().toISOString().slice(0, 10);
+    const dateStr = options.dateStr || toDateKey(new Date());
     const slots = await calculateShopSlotsForDate(shop, dateStr, options.staffId);
     const staffList = shop.staff || [];
 

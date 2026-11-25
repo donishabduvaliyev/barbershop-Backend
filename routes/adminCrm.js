@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { requireShopAdmin } from '../middleware/adminAuth.js';
 import {
   computeShopCrmSegments,
@@ -7,6 +8,15 @@ import {
 
 const router = express.Router();
 router.use(requireShopAdmin);
+
+const broadcastRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.shopId?.toString() || ipKeyGenerator(req.ip),
+  message: { message: 'Too many broadcasts sent recently. Please wait 15 minutes.' },
+});
 
 // 1. Get full RFM segmentation summary & ranked customer list
 router.get('/segments', async (req, res) => {
@@ -35,7 +45,7 @@ router.get('/at-risk', async (req, res) => {
 });
 
 // 3. Trigger targeted win-back re-engagement broadcast
-router.post('/broadcast-reengagement', async (req, res) => {
+router.post('/broadcast-reengagement', broadcastRateLimiter, async (req, res) => {
   try {
     const { messageTemplate, targetSegment, limit } = req.body;
     const rawLimit = parseInt(limit, 10);

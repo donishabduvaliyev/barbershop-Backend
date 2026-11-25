@@ -93,3 +93,10 @@ export function startReminderJob() {
   runReminderSweep(); // catch anything due immediately on boot
   intervalHandle = setInterval(runReminderSweep, CHECK_INTERVAL_MS);
 }
+
+export function stopReminderJob() {
+  if (intervalHandle) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
+  }
+}

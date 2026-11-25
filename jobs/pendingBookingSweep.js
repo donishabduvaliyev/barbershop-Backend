@@ -79,3 +79,10 @@ export function startPendingBookingSweepJob() {
   runPendingBookingSweep(); // catch anything already overdue on boot
   intervalHandle = setInterval(runPendingBookingSweep, CHECK_INTERVAL_MS);
 }
+
+export function stopPendingBookingSweepJob() {
+  if (intervalHandle) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
+  }
+}

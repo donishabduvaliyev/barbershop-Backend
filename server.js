@@ -40,10 +40,10 @@ import trackRouter from './routes/track.js';
 import webRouter from './routes/web/index.js';
 import mobileRouter from './routes/mobile/index.js';
 import publicInquiriesRouter from './routes/publicInquiries.js';
-import { startReminderJob } from './jobs/reminders.js';
-import { startWinBackJob } from './jobs/winBack.js';
-import { startPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
-import { startBackupJob } from './jobs/backup.js';
+import { startReminderJob, stopReminderJob } from './jobs/reminders.js';
+import { startWinBackJob, stopWinBackJob } from './jobs/winBack.js';
+import { startPendingBookingSweepJob, stopPendingBookingSweepJob } from './jobs/pendingBookingSweep.js';
+import { startBackupJob, stopBackupJob } from './jobs/backup.js';
 import { initErrorTracking, captureError } from './config/errorTracking.js';
 import { sanitizeRequest } from './middleware/sanitize.js';
 
@@ -64,6 +64,7 @@ process.on('uncaughtException', (err) => {
 });
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 
 import rateLimit from 'express-rate-limit';
@@ -111,21 +112,23 @@ app.use((_req, res, next) => {
     next();
 });
 
-app.use(cors({
-    // Native mobile apps (React Native / OkHttp / CFNetwork) send no Origin
-    // header (!origin), which is allowed automatically while web origins are
-    // checked against allowedOrigins.
-    origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+// Native mobile apps (React Native / OkHttp / CFNetwork) send no Origin
+// header (!origin), which is allowed automatically while web origins are
+// checked against allowedOrigins.
+function corsOrigin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+    }
+    if (process.env.NODE_ENV !== 'production') {
+        if (/^https?:\/\/localhost(:\d+)?$/.test(origin) || /\.ngrok(-free)?\.app$/.test(origin)) {
             return callback(null, true);
         }
-        if (process.env.NODE_ENV !== 'production') {
-            if (/^https?:\/\/localhost(:\d+)?$/.test(origin) || /\.ngrok(-free)?\.app$/.test(origin)) {
-                return callback(null, true);
-            }
-        }
-        return callback(new Error('Blocked by CORS'));
-    },
+    }
+    return callback(new Error('Blocked by CORS'));
+}
+
+app.use(cors({
+    origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: [
         'Content-Type',
@@ -196,7 +199,7 @@ app.use('/api/track', trackRouter);
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
-    cors: { origin: true, methods: ['GET', 'POST'] },
+    cors: { origin: corsOrigin, methods: ['GET', 'POST'] },
 });
 
 // Unified Real-Time Socket.io Auth:
@@ -268,6 +271,11 @@ io.on('connection', (socket) => {
     if (socket.clientRole === 'customer' || socket.clientRole === 'public') {
         socket.on('watch:shop', (shopId) => {
             if (typeof shopId === 'string' && /^[a-f0-9]{24}$/i.test(shopId)) {
+                for (const room of socket.rooms) {
+                    if (room.startsWith('public:shop:')) {
+                        socket.leave(room);
+                    }
+                }
                 socket.join(`public:shop:${shopId}`);
             }
         });
@@ -336,6 +344,13 @@ async function gracefulShutdown(signal) {
             stopShopControlBot(),
         ]);
         console.log('✅ Telegram bot pollers stopped.');
+
+        // 2. Stop background cron/interval jobs before closing MongoDB
+        stopReminderJob();
+        stopWinBackJob();
+        stopPendingBookingSweepJob();
+        stopBackupJob();
+        console.log('✅ Background jobs stopped.');
 
         if (httpServer && httpServer.listening) {
             await new Promise((resolve) => httpServer.close(resolve));
